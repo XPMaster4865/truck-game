@@ -729,6 +729,8 @@ func (g *Game) generate() {
 	g.placeYards(r)
 	g.buildSlips()
 	g.fillLots(r)
+	g.clearSlipVerges()
+	g.buildLamps()
 
 	// speed cameras on straight-ish town roads
 	for tries := 0; len(g.cameras) < 16 && tries < 500; tries++ {
@@ -1222,6 +1224,31 @@ func (g *Game) buildSlips() {
 				}
 				if (g.tiles[xx][yy] == TGrass || g.tiles[xx][yy] == TField) && g.tileEdge[xx][yy] > 10 && g.tileEdge[xx][yy] < 260 {
 					g.tiles[xx][yy] = THedge
+				}
+			}
+		}
+	}
+}
+
+// clearSlipVerges removes any hedges / trees near a slip road so a truck's corners
+// can't clip them on the bends (they come from field boundaries and the motorway fence).
+func (g *Game) clearSlipVerges() {
+	for _, sl := range g.slips {
+		for s := 0.0; s <= sl.Len; s += 16 {
+			x, y, _, _ := sl.at(s)
+			for xx := int((x - 140) / tile); xx <= int((x+140)/tile); xx++ {
+				for yy := int((y - 140) / tile); yy <= int((y+140)/tile); yy++ {
+					if xx < 0 || yy < 0 || xx >= mapW || yy >= mapH {
+						continue
+					}
+					cx, cy := float64(xx*tile+32), float64(yy*tile+32)
+					if math.Hypot(cx-x, cy-y) > 130 {
+						continue
+					}
+					switch g.tiles[xx][yy] {
+					case THedge, TTree, TWater, TField:
+						g.tiles[xx][yy] = TGrass
+					}
 				}
 			}
 		}
@@ -1912,6 +1939,7 @@ func (g *Game) drawChunk(img *ebiten.Image, ox, oy float64) {
 			T(fmt.Sprintf("%d", int(rd.Limit)), faceSign, sx, sy-8, rgb(10, 10, 10))
 		}
 	}
+	g.drawLampPosts(img, ox, oy)
 	// trees
 	for x := tx0; x < tx1; x++ {
 		for y := ty0; y < ty1; y++ {

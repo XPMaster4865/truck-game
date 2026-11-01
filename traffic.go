@@ -248,6 +248,7 @@ type Car struct {
 	offRate             float64 // sideways drift per pixel travelled (lane changes)
 	id                  int
 	dhx, dhy            float64 // drawn heading
+	wx, wy              float64 // drawn position
 }
 
 func (c *Car) isEV() bool { return c.kind == kAmbulance || c.kind == kFire || c.kind == kPoliceEV }
@@ -1418,6 +1419,13 @@ func (g *Game) drawCar(screen *ebiten.Image, c *Car, cx, cy float64) {
 	sx, sy := (fx+rx0)/2-cx, (fy+ry0)/2-cy
 	drawRot(screen, c.img, sx, sy, ang)
 	c.dhx, c.dhy = math.Cos(ang), math.Sin(ang)
+	c.wx, c.wy = sx+cx, sy+cy
+	g.drawCarLamps(screen, c, cx, cy)
+}
+
+// drawCarLamps draws indicators, brake lights and blue lights (also redrawn over the night overlay).
+func (g *Game) drawCarLamps(screen *ebiten.Image, c *Car, cx, cy float64) {
+	sx, sy := c.wx-cx, c.wy-cy
 	ind := 0
 	switch {
 	case c.crashed > 0 || c.broken > 0 || c.hazard > 0:

@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/rand"
 	"strings"
+	_ "time/tzdata" // UK time zone (GMT/BST) built in, so it works on any PC
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
@@ -80,6 +81,10 @@ type Game struct {
 	sound            *Sound
 	noSave           bool
 	motorCheck       float64
+	lamps            [][4]float64
+	yardLamps        [][2]float64
+	fixedHour        float64
+	realClock        bool
 	net              *Net
 	netTick          int
 	typing           bool
@@ -165,6 +170,7 @@ func init() {
 
 func NewGame() *Game {
 	g := &Game{rng: rand.New(rand.NewSource(42)), truckImgs: map[[3]int]*ebiten.Image{}}
+	g.fixedHour = -1
 	g.generate()
 	g.reset()
 	g.hasSave = saveExists()
@@ -412,6 +418,14 @@ func (g *Game) Update() error {
 		g.state = stPause
 		return nil
 	}
+	if !g.typing && inpututil.IsKeyJustPressed(ebiten.KeyK) {
+		g.realClock = !g.realClock
+		if g.realClock {
+			g.flash("Clock: real time (matches your PC)")
+		} else {
+			g.flash("Clock: fast time (a day lasts 24 minutes)")
+		}
+	}
 	if !g.typing && inpututil.IsKeyJustPressed(ebiten.KeyM) {
 		g.state = stMap
 		g.mapPan, g.mapPanY = 0, 0
@@ -507,10 +521,12 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	g.drawLights(screen, cx, cy)
 
 	if g.state == stOnline {
+		g.drawNight(screen, cx, cy)
 		g.drawOnlineMenu(screen)
 		return
 	}
 	if g.state == stTitle {
+		g.drawNight(screen, cx, cy)
 		g.drawTitle(screen)
 		return
 	}
@@ -519,6 +535,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		tb := g.truck.Speed > 5 && pressed(ebiten.KeyS, ebiten.KeyArrowDown, ebiten.KeySpace)
 		g.drawLamps(screen, g.truck.X-cx, g.truck.Y-cy, math.Cos(g.truck.Angle), math.Sin(g.truck.Angle), 44, 34, g.ind, tb)
 	}
+	g.drawNight(screen, cx, cy)
 
 	if p := g.target(); p != nil {
 		bx, by := p.bayCenter()
@@ -562,16 +579,16 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 func (g *Game) drawControls(screen *ebiten.Image, y float64) {
 	lines := [][2]string{
-		{"W / Up", "Accelerate"}, {"S / Down", "Brake / Reverse"}, {"A D / Left Right", "Steer"}, {"Q / E", "Indicate left / right"}, {"X", "Hazard lights"}, {"H", "Horn"}, {"M + right-click", "Set sat-nav destination"}, {"J", "Create your own job"},
+		{"W / Up", "Accelerate"}, {"S / Down", "Brake / Reverse"}, {"A D / Left Right", "Steer"}, {"Q / E", "Indicate left / right"}, {"X", "Hazard lights"}, {"H", "Horn"}, {"M + right-click", "Set sat-nav destination"}, {"J", "Create your own job"}, {"K", "Clock: fast / real time"},
 		{"Space", "Handbrake"}, {"1  2  3", "Choose a job"}, {"M", "City map"},
 		{"C", "Cancel job"}, {"R", "Call recovery (when out of fuel)"}, {"P / Esc", "Pause"}, {"F", "Fullscreen"},
 	}
 	for i, l := range lines {
-		col := float64(i / 8)
-		row := float64(i % 8)
+		col := float64(i / 9)
+		row := float64(i % 9)
 		x := screenW/2 - 420 + col*440
-		drawTextShadow(screen, l[0], faceMed, x, y+row*30, rgb(255, 210, 60), text.AlignStart)
-		drawTextShadow(screen, l[1], faceSmall, x+180, y+row*30+3, color.White, text.AlignStart)
+		drawTextShadow(screen, l[0], faceMed, x, y+row*27, rgb(255, 210, 60), text.AlignStart)
+		drawTextShadow(screen, l[1], faceSmall, x+180, y+row*27+3, color.White, text.AlignStart)
 	}
 }
 
@@ -754,6 +771,7 @@ func (g *Game) drawHUD(screen *ebiten.Image) {
 	}
 	g.drawJunctionAhead(screen)
 	g.drawNetHUD(screen)
+	g.drawClock(screen, 12, screenH-216)
 	g.drawDash(screen)
 	g.drawMinimap(screen)
 }
@@ -1208,7 +1226,7 @@ func main() {
 }
 
 // gameVersion is shown on the title screen and checked between online players.
-const gameVersion = "v5.4"
+const gameVersion = "v5.6"
 
 // smoothShapes turns on anti-aliasing; it's expensive, so only the HUD dials use it.
 var smoothShapes = false

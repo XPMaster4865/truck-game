@@ -400,7 +400,10 @@ func (g *Game) drawNetHUD(screen *ebiten.Image) {
 		drawText(screen, "T = chat", faceTiny, screenW-14, 124, color.RGBA{200, 200, 200, 200}, text.AlignEnd)
 	}
 	// chat (bottom left, above the dashboard)
-	y := screenH - 200.0
+	y := screenH - 226.0
+	if g.typing {
+		y = screenH - 254
+	}
 	shown := 0
 	for i := len(lines) - 1; i >= 0 && shown < 6; i-- {
 		l := lines[i]
@@ -423,12 +426,12 @@ func (g *Game) drawNetHUD(screen *ebiten.Image) {
 		shown++
 	}
 	if g.typing {
-		fillRect(screen, 12, screenH-198, 470, 26, color.NRGBA{20, 30, 60, 230})
+		fillRect(screen, 12, screenH-250, 470, 26, color.NRGBA{20, 30, 60, 230})
 		cursor := ""
 		if math.Mod(g.clock, 1) < 0.5 {
 			cursor = "|"
 		}
-		drawText(screen, "Say: "+g.chatBuf+cursor, faceSmall, 18, screenH-194, color.White, text.AlignStart)
+		drawText(screen, "Say: "+g.chatBuf+cursor, faceSmall, 18, screenH-246, color.White, text.AlignStart)
 	}
 }
 

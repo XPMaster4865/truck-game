@@ -201,6 +201,24 @@ func init() {
 	t0 := time.Now()
 	g := NewGame()
 	fmt.Printf("NewGame %.2fs\n", time.Since(t0).Seconds())
+	if h := os.Getenv("HOUR"); h != "" {
+		fmt.Sscanf(h, "%f", &g.fixedHour)
+	}
+	// drive a truck along every slip road and count anything solid it would touch
+	hits := 0
+	for i, sl := range g.slips {
+		for s := 0.0; s <= sl.Len; s += 12 {
+			x, y, tx, ty := sl.at(s)
+			if g.truckHits(x, y, math.Atan2(ty, tx)) {
+				hits++
+				if hits <= 5 {
+					k, _ := g.tileAt(x, y)
+					fmt.Printf("  slip %d hit at s=%.0f/%.0f (%.0f,%.0f) tile=%d\n", i, s, sl.Len, x, y, k)
+				}
+			}
+		}
+	}
+	fmt.Printf("slip drive test: %d hits over %d slip roads, lamps=%d\n", hits, len(g.slips), len(g.lamps))
 	if err := ebiten.RunGame(&ct{Game: g}); err != nil {
 		fmt.Println("err", err)
 	}
