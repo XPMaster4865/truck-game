@@ -1098,10 +1098,17 @@ func (g *Game) placeYards(r *rand.Rand) {
 	}
 }
 
+type slipZone struct {
+	lo, hi float64
+	side   float64
+}
+
 // buildSlips gives each motorway services an off-slip from the hard shoulder before it
 // and an on-slip back onto the motorway after it, like real services.
 func (g *Game) buildSlips() {
 	g.slips = nil
+	g.slipMW = nil
+	g.slipZones = map[int][]slipZone{}
 	for pi, p := range places {
 		if p.MW == 0 {
 			continue
@@ -1149,6 +1156,12 @@ func (g *Game) buildSlips() {
 		on := mk([2]float64{ex1 + inx*40, ey1 + iny*40}, [2]float64{ex1 - inx*260, ey1 - iny*260},
 			[2]float64{dx - dtx*500, dy - dty*500}, [2]float64{dx, dy})
 		g.slips = append(g.slips, off, on)
+		// where the slip roads leave / join, the hard shoulder becomes the slip lane
+		mi := g.motorways[p.MW-1]
+		for _, z := range [][2]float64{{up - 750*side, up + 120*side}, {dn - 120*side, dn + 750*side}} {
+			g.slipZones[mi] = append(g.slipZones[mi], slipZone{lo: math.Min(z[0], z[1]), hi: math.Max(z[0], z[1]), side: side})
+		}
+		g.slipMW = append(g.slipMW, mi, mi)
 		for _, sl := range []*Road{off, on} {
 			for s := 0.0; s <= sl.Len; s += 16 {
 				x, y, _, _ := sl.at(s)
@@ -1634,6 +1647,13 @@ func (g *Game) drawChunk(img *ebiten.Image, ox, oy float64) {
 			C(n.X, n.Y, n.R+pavement+8, paveCol)
 		}
 	}
+	// services slip roads (surface first, so the motorway is drawn over the join)
+	for _, sl := range g.slips {
+		if sl.x1+200 < ox || sl.y1+200 < oy || sl.x0-200 > ox+chunkSz || sl.y0-200 > oy+chunkSz {
+			continue
+		}
+		g.band(img, sl, 0, sl.Len, -40, 40, asphalt, ox, oy, nil)
+	}
 	for _, ri := range vis {
 		rd := g.roads[ri]
 		g.band(img, rd, 0, rd.Len, 0, 0, asphalt, ox, oy, func(s float64) (float64, float64) {
@@ -1650,16 +1670,75 @@ func (g *Game) drawChunk(img *ebiten.Image, ox, oy float64) {
 		C(n.X, n.Y, r, asphalt)
 	}
 	// services slip roads
-	for _, sl := range g.slips {
+	for si, sl := range g.slips {
 		if sl.x1+200 < ox || sl.y1+200 < oy || sl.x0-200 > ox+chunkSz || sl.y0-200 > oy+chunkSz {
 			continue
 		}
-		g.band(img, sl, 0, sl.Len, -46, 46, rgb(80, 130, 60), ox, oy, nil)
-		g.band(img, sl, 0, sl.Len, -40, 40, asphalt, ox, oy, nil)
-		g.band(img, sl, 30, sl.Len-30, 32, 36, white, ox, oy, nil)
-		g.band(img, sl, 30, sl.Len-30, -36, -32, white, ox, oy, nil)
+		for ss := 0.0; ss < sl.Len; ss += 24 {
+			x, y, _, _ := sl.at(ss)
+			if !in(x, y, 80) {
+				continue
+			}
+			if h := g.roadQuery(x, y, 500); h.Road >= 0 && h.Edge < 30 {
+				continue // still part of the motorway carriageway
+			}
+			g.band(img, sl, ss, ss+25, 32, 36, white, ox, oy, nil)
+			g.band(img, sl, ss, ss+25, -36, -32, white, ox, oy, nil)
+		}
+		// hatched chevrons in the gap where the slip road splits from / joins the motorway
+		if si < len(g.slipMW) {
+			mr := g.roads[g.slipMW[si]]
+			for s := 20.0; s < sl.Len*0.5; s += 34 {
+				ss := s
+				if si%2 == 1 { // on-slip: the nose is at the far end
+					ss = sl.Len - s
+				}
+				x, y, tx, ty := sl.at(ss)
+				h := g.roadQuery(x, y, 600)
+				if h.Road < 0 || g.roads[h.Road] != mr {
+					continue
+				}
+				gap := h.D - mr.halfAt(h.S) - 40
+				if gap < 8 || gap > 260 {
+					continue
+				}
+				mx, my, _, _ := mr.at(h.S)
+				// side of the slip facing the motorway
+				nx, ny := ty, -tx
+				if (mx-x)*nx+(my-y)*ny < 0 {
+					nx, ny = -nx, -ny
+				}
+				ax, ay := x+nx*42, y+ny*42
+				bx, by := ax+nx*gap+tx*gap*0.6, ay+ny*gap+ty*gap*0.6
+				if si%2 == 1 {
+					bx, by = ax+nx*gap-tx*gap*0.6, ay+ny*gap-ty*gap*0.6
+				}
+				strokeLine(img, ax-ox, ay-oy, bx-ox, by-oy, 5, white)
+			}
+			// nose outline
+			for s := 0.0; s < sl.Len*0.5; s += 10 {
+				ss := s
+				if si%2 == 1 {
+					ss = sl.Len - s
+				}
+				x, y, tx, ty := sl.at(ss)
+				h := g.roadQuery(x, y, 600)
+				if gp := h.D - mr.halfAt(h.S) - 40; h.Road < 0 || g.roads[h.Road] != mr || gp > 260 || gp < 4 {
+					continue
+				}
+				mx, my, _, _ := mr.at(h.S)
+				nx, ny := ty, -tx
+				if (mx-x)*nx+(my-y)*ny < 0 {
+					nx, ny = -nx, -ny
+				}
+				fillCircle(img, x+nx*40-ox, y+ny*40-oy, 2.5, white)
+			}
+		}
 		for s := sl.Len * 0.3; s < sl.Len*0.8; s += sl.Len * 0.25 {
 			x, y, tx, ty := sl.at(s)
+			if h := g.roadQuery(x, y, 500); h.Road >= 0 && h.Edge < 30 {
+				continue
+			}
 			fillTri(img, x+tx*14-ox, y+ty*14-oy, x-tx*8+ty*9-ox, y-ty*8-tx*9-oy, x-tx*8-ty*9-ox, y-ty*8+tx*9-oy, white)
 		}
 	}
@@ -1678,8 +1757,35 @@ func (g *Game) drawChunk(img *ebiten.Image, ox, oy float64) {
 				// solid line next to reservation and next to hard shoulder
 				g.band(img, rd, s0, s1, sgn*(mwRes+2), sgn*(mwRes+6), white, ox, oy, nil)
 				edge := mwRes + 3*mwLane
-				g.band(img, rd, s0, s1, sgn*(edge-2), sgn*(edge+3), white, ox, oy, nil)
-				g.band(img, rd, s0, s1, sgn*(edge+3), sgn*(mwHalf), rgb(70, 70, 76), ox, oy, nil)
+				// solid edge line, except at slip roads where it becomes thick short dashes
+				cur := s0
+				for _, z := range g.slipZones[ri] {
+					if z.side != sgn || z.hi < s0 || z.lo > s1 {
+						continue
+					}
+					if z.lo > cur {
+						g.band(img, rd, cur, z.lo, sgn*(edge-2), sgn*(edge+3), white, ox, oy, nil)
+					}
+					g.band(img, rd, math.Max(z.lo, s0), math.Min(z.hi, s1), sgn*(edge+3), sgn*(mwHalf), asphalt, ox, oy, nil)
+					g.dashes(img, rd, math.Max(z.lo, s0), math.Min(z.hi, s1), sgn*edge, 14, 10, 9, white, ox, oy)
+					cur = math.Max(cur, z.hi)
+				}
+				if cur < s1 {
+					g.band(img, rd, cur, s1, sgn*(edge-2), sgn*(edge+3), white, ox, oy, nil)
+				}
+				cur = s0
+				for _, z := range g.slipZones[ri] {
+					if z.side != sgn || z.hi < s0 || z.lo > s1 {
+						continue
+					}
+					if z.lo > cur {
+						g.band(img, rd, cur, z.lo, sgn*(edge+3), sgn*(mwHalf), rgb(70, 70, 76), ox, oy, nil)
+					}
+					cur = math.Max(cur, z.hi)
+				}
+				if cur < s1 {
+					g.band(img, rd, cur, s1, sgn*(edge+3), sgn*(mwHalf), rgb(70, 70, 76), ox, oy, nil)
+				}
 				for k := 1; k <= 2; k++ {
 					g.dashes(img, rd, s0, s1, sgn*(mwRes+float64(k)*mwLane), 40, 50, 4, white, ox, oy)
 				}

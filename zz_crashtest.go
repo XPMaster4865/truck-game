@@ -70,10 +70,14 @@ func (t *ct) Update() error {
 		k := 0
 		for _, p := range places {
 			if p.MW > 0 {
-				if (t.n == 95 && k == 0) || (t.n == 110 && k == 2) {
-					x, y := p.bayCenter()
-					shotX, shotY = x-screenW/2, y-screenH/2+120
-					shot = fmt.Sprintf("/tmp/ct/services%d.png", k)
+				if (t.n == 95 && k == 0) || (t.n == 110 && k == 0) {
+					sl := t.slips[k*2+(t.n-95)/15]
+					x, y, _, _ := sl.at(sl.Len * 0.3)
+					if (t.n-95)/15 == 1 {
+						x, y, _, _ = sl.at(sl.Len * 0.7)
+					}
+					shotX, shotY = x-screenW/2, y-screenH/2
+					shot = fmt.Sprintf("/tmp/ct/services%d_%d.png", k, t.n)
 					t.truck.X, t.truck.Y = x+600, y+900
 				}
 				k++

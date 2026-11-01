@@ -38,6 +38,8 @@ type Game struct {
 	roads            []*Road
 	motorways        []int
 	slips            []*Road
+	slipMW           []int
+	slipZones        map[int][]slipZone
 	slipTile         [mapW][mapH]bool
 	mwDest           map[int][2]string
 	segIdx           map[int][]segRef
