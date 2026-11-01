@@ -584,7 +584,7 @@ func (g *Game) truckApproaching(node int, within float64) bool {
 // junctionConflict: is there traffic that has priority over car c at its next junction?
 func (g *Game) junctionConflict(c *Car, majorOnly bool) bool {
 	node := c.to
-	for _, o := range g.cars {
+	for _, o := range g.carsTo[node] {
 		if o == c || o.chase || o.crashed > 0 || o.broken > 0 {
 			continue
 		}
@@ -618,7 +618,7 @@ func (g *Game) junctionConflict(c *Car, majorOnly bool) bool {
 func (g *Game) oncomingConflict(c *Car) bool {
 	node := c.to
 	in := g.apprOf(node, c.road)
-	for _, o := range g.cars {
+	for _, o := range g.carsTo[node] {
 		if o == c || o.to != node || o.road == c.road || o.chase || o.crashed > 0 {
 			continue
 		}
@@ -644,7 +644,7 @@ func (g *Game) oncomingConflict(c *Car) bool {
 }
 
 func (g *Game) exitBlocked(c *Car) bool {
-	for _, o := range g.cars {
+	for _, o := range g.carsRoad[c.nroad] {
 		if o == c || o.inTurn || o.road != c.nroad || o.from != c.to {
 			continue
 		}
@@ -657,7 +657,48 @@ func (g *Game) exitBlocked(c *Car) bool {
 
 // ---------- main traffic update ----------
 
+const gridCell = 300
+
+func gridKey(x, y float64) int { return int(x)/gridCell*10000 + int(y)/gridCell }
+
+// buildCarIndex groups cars by area, by the junction they're heading to and by road,
+// so each car only looks at the handful of cars that could matter to it.
+func (g *Game) buildCarIndex() {
+	if g.carGrid == nil {
+		g.carGrid = map[int][]*Car{}
+		g.carsTo = map[int][]*Car{}
+		g.carsRoad = map[int][]*Car{}
+	}
+	for k, v := range g.carGrid {
+		g.carGrid[k] = v[:0]
+	}
+	for k, v := range g.carsTo {
+		g.carsTo[k] = v[:0]
+	}
+	for k, v := range g.carsRoad {
+		g.carsRoad[k] = v[:0]
+	}
+	for _, c := range g.cars {
+		k := gridKey(c.x, c.y)
+		g.carGrid[k] = append(g.carGrid[k], c)
+		g.carsTo[c.to] = append(g.carsTo[c.to], c)
+		g.carsRoad[c.road] = append(g.carsRoad[c.road], c)
+	}
+}
+
+func (g *Game) carsNear(x, y float64, fn func(o *Car)) {
+	cx, cy := int(x)/gridCell, int(y)/gridCell
+	for i := cx - 1; i <= cx+1; i++ {
+		for j := cy - 1; j <= cy+1; j++ {
+			for _, o := range g.carGrid[i*10000+j] {
+				fn(o)
+			}
+		}
+	}
+}
+
 func (g *Game) updateCars() {
+	g.buildCarIndex()
 	tc := g.truckCircles()
 	var evs []*Car
 	for _, c := range g.cars {
@@ -753,13 +794,13 @@ func (g *Game) updateCars() {
 			c.ghost -= dt
 		}
 		if !c.isEV() && c.ghost <= 0 && !c.pulling {
-			for _, o := range g.cars {
+			g.carsNear(c.x, c.y, func(o *Car) {
 				if o == c {
-					continue
+					return
 				}
 				ox, oy := o.x-c.x, o.y-c.y
 				if math.Abs(ox) > 260 || math.Abs(oy) > 260 {
-					continue
+					return
 				}
 				along := ox*c.hx + oy*c.hy
 				lat := ox*rx + oy*ry
@@ -778,7 +819,7 @@ func (g *Game) updateCars() {
 						blocker = o
 					}
 				}
-			}
+			})
 		}
 		if c.isEV() {
 			for _, o := range evs {

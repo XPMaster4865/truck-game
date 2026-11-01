@@ -289,11 +289,11 @@ var places = []*Place{
 	{Name: "Argoz", Color: rgb(200, 20, 40), Floor: rgb(128, 128, 132)},
 	{Name: "Screwfixx", Color: rgb(20, 60, 140), Floor: rgb(128, 128, 132)},
 	{Name: "The Red Lion Pub", Color: rgb(140, 30, 30), Floor: rgb(120, 110, 100)},
-	{Name: "PB Fuel", Color: rgb(0, 150, 70), Floor: rgb(120, 122, 128), Fuel: 1.39},
-	{Name: "Crab Petrol", Color: rgb(250, 200, 0), Floor: rgb(120, 122, 128), Fuel: 1.49},
-	{Name: "Essco", Color: rgb(220, 20, 40), Floor: rgb(120, 122, 128), Fuel: 1.45},
-	{Name: "Texacoo", Color: rgb(200, 20, 20), Floor: rgb(120, 122, 128), Fuel: 1.42},
-	{Name: "GridSwerve Charging Hub", Color: rgb(0, 200, 180), Floor: rgb(120, 125, 130), Charge: 0.55},
+	{Name: "PB Fuel", Color: rgb(0, 150, 70), Floor: rgb(120, 122, 128), Fuel: 0.83},
+	{Name: "Crab Petrol", Color: rgb(250, 200, 0), Floor: rgb(120, 122, 128), Fuel: 0.89},
+	{Name: "Essco", Color: rgb(220, 20, 40), Floor: rgb(120, 122, 128), Fuel: 0.87},
+	{Name: "Texacoo", Color: rgb(200, 20, 20), Floor: rgb(120, 122, 128), Fuel: 0.85},
+	{Name: "GridSwerve Charging Hub", Color: rgb(0, 200, 180), Floor: rgb(120, 125, 130), Charge: 0.30},
 	{Name: "Big Al's Truck Sales", Color: rgb(255, 255, 255), Floor: rgb(120, 125, 135), Dealer: true},
 	// ---- Cambridge ----
 	{Name: "Fitzbilly's Bakery", City: 1, Cargo: "Chelsea Buns", Color: rgb(120, 60, 140), Floor: rgb(128, 128, 132),
@@ -307,8 +307,8 @@ var places = []*Place{
 	{Name: "Grand Arcayde", City: 1, Color: rgb(80, 80, 90), Floor: rgb(128, 128, 132)},
 	{Name: "Teaco Express", City: 1, Color: rgb(0, 80, 160), Floor: rgb(128, 128, 132)},
 	{Name: "The Eagle Pub", City: 1, Color: rgb(60, 40, 30), Floor: rgb(120, 110, 100)},
-	{Name: "PB Cambridge", City: 1, Color: rgb(0, 150, 70), Floor: rgb(120, 122, 128), Fuel: 1.41},
-	{Name: "Ionnity Chargers", City: 1, Color: rgb(90, 40, 160), Floor: rgb(120, 125, 130), Charge: 0.62},
+	{Name: "PB Cambridge", City: 1, Color: rgb(0, 150, 70), Floor: rgb(120, 122, 128), Fuel: 0.85},
+	{Name: "Ionnity Chargers", City: 1, Color: rgb(90, 40, 160), Floor: rgb(120, 125, 130), Charge: 0.34},
 	// ---- M11 services ----
 	// ---- Manchester ----
 	{Name: "Trafferd Park Depot", City: 2, Cargo: "Containers", Color: rgb(70, 110, 160), Floor: rgb(115, 118, 125),
@@ -321,13 +321,13 @@ var places = []*Place{
 	{Name: "Old Trafferd Stadium", City: 2, Color: rgb(200, 20, 30), Floor: rgb(120, 125, 120)},
 	{Name: "Media Citty", City: 2, Color: rgb(60, 60, 70), Floor: rgb(128, 128, 132)},
 	{Name: "Teaco Metro", City: 2, Color: rgb(0, 80, 160), Floor: rgb(128, 128, 132)},
-	{Name: "Essco Manchester", City: 2, Color: rgb(220, 20, 40), Floor: rgb(120, 122, 128), Fuel: 1.43},
-	{Name: "Ionnity Manchester", City: 2, Color: rgb(90, 40, 160), Floor: rgb(120, 125, 130), Charge: 0.6},
+	{Name: "Essco Manchester", City: 2, Color: rgb(220, 20, 40), Floor: rgb(120, 122, 128), Fuel: 0.86},
+	{Name: "Ionnity Manchester", City: 2, Color: rgb(90, 40, 160), Floor: rgb(120, 125, 130), Charge: 0.33},
 	// ---- motorway services ----
-	{Name: "Welcome Brake Services", City: -1, MW: 1, Side: 1, Frac: 0.40, Color: rgb(200, 30, 60), Floor: rgb(118, 120, 126), Fuel: 1.69, Charge: 0.79},
-	{Name: "Roadchief Services", City: -1, MW: 1, Side: -1, Frac: 0.58, Color: rgb(230, 120, 0), Floor: rgb(118, 120, 126), Fuel: 1.65, Charge: 0.75},
-	{Name: "Watferd Gap Services", City: -1, MW: 2, Side: 1, Frac: 0.42, Color: rgb(40, 120, 60), Floor: rgb(118, 120, 126), Fuel: 1.72, Charge: 0.8},
-	{Name: "Toddingtun Services", City: -1, MW: 2, Side: -1, Frac: 0.6, Color: rgb(200, 90, 20), Floor: rgb(118, 120, 126), Fuel: 1.68, Charge: 0.77},
+	{Name: "Welcome Brake Services", City: -1, MW: 1, Side: 1, Frac: 0.40, Color: rgb(200, 30, 60), Floor: rgb(118, 120, 126), Fuel: 1.01, Charge: 0.43},
+	{Name: "Roadchief Services", City: -1, MW: 1, Side: -1, Frac: 0.58, Color: rgb(230, 120, 0), Floor: rgb(118, 120, 126), Fuel: 0.99, Charge: 0.41},
+	{Name: "Watferd Gap Services", City: -1, MW: 2, Side: 1, Frac: 0.42, Color: rgb(40, 120, 60), Floor: rgb(118, 120, 126), Fuel: 1.03, Charge: 0.44},
+	{Name: "Toddingtun Services", City: -1, MW: 2, Side: -1, Frac: 0.6, Color: rgb(200, 90, 20), Floor: rgb(118, 120, 126), Fuel: 1.01, Charge: 0.42},
 }
 
 type Rect struct {
@@ -1149,7 +1149,7 @@ func (g *Game) chunk(cx, cy int) *ebiten.Image {
 		g.chunkUsed[k] = g.frameNo
 		return img
 	}
-	if len(g.chunkCache) >= 24 {
+	if len(g.chunkCache) >= 32 {
 		var oldest [2]int
 		best := int64(math.MaxInt64)
 		for kk, t := range g.chunkUsed {
@@ -1166,6 +1166,24 @@ func (g *Game) chunk(cx, cy int) *ebiten.Image {
 	g.chunkCache[k] = img
 	g.chunkUsed[k] = g.frameNo
 	return img
+}
+
+// prefetchChunk builds at most one not-yet-drawn map section near the camera per frame,
+// so driving into a new area doesn't stall while several sections are drawn at once.
+func (g *Game) prefetchChunk() {
+	x0, y0 := int(math.Floor((g.camX-chunkSz)/chunkSz)), int(math.Floor((g.camY-chunkSz)/chunkSz))
+	x1, y1 := int((g.camX+screenW+chunkSz)/chunkSz), int((g.camY+screenH+chunkSz)/chunkSz)
+	for i := x0; i <= x1; i++ {
+		for j := y0; j <= y1; j++ {
+			if i < 0 || j < 0 || i*chunkSz >= worldW || j*chunkSz >= worldH {
+				continue
+			}
+			if _, ok := g.chunkCache[[2]int{i, j}]; !ok {
+				g.chunk(i, j)
+				return
+			}
+		}
+	}
 }
 
 func (g *Game) buildWorld() {
@@ -1246,12 +1264,48 @@ func fillQuad(dst *ebiten.Image, pts [4][2]float64, c color.Color) {
 }
 
 // band fills the strip between lateral offsets lo..hi (left of a->b) along s0..s1 of a road.
-func (g *Game) band(img *ebiten.Image, rd *Road, s0, s1, lo, hi float64, c color.Color, ox, oy float64, widthFn func(s float64) (float64, float64)) {
+// triangle batching: thousands of road quads go to the GPU in one call
+type triBatch struct {
+	vs []ebiten.Vertex
+	is []uint16
+}
+
+var tb triBatch
+
+func (b *triBatch) quad(pts [4][2]float64, c color.Color) {
+	if len(b.vs) > 60000 {
+		return
+	}
+	cr, cg, cb, ca := c.RGBA()
+	fr, fg, fb, fa := float32(cr)/0xffff, float32(cg)/0xffff, float32(cb)/0xffff, float32(ca)/0xffff
+	base := uint16(len(b.vs))
+	for _, p := range pts {
+		b.vs = append(b.vs, ebiten.Vertex{DstX: float32(p[0]), DstY: float32(p[1]), SrcX: 1, SrcY: 1, ColorR: fr, ColorG: fg, ColorB: fb, ColorA: fa})
+	}
+	b.is = append(b.is, base, base+1, base+2, base, base+2, base+3)
+}
+
+func (b *triBatch) flush(dst *ebiten.Image) {
+	if len(b.is) == 0 {
+		return
+	}
+	op := &ebiten.DrawTrianglesOptions{AntiAlias: true, ColorScaleMode: ebiten.ColorScaleModePremultipliedAlpha}
+	dst.DrawTriangles(b.vs, b.is, whiteSub, op)
+	b.vs, b.is = b.vs[:0], b.is[:0]
+}
+
+// bandAdd queues the strip between lateral offsets lo..hi along s0..s1 of a road,
+// skipping the parts that are nowhere near the chunk being drawn.
+func (g *Game) bandAdd(rd *Road, s0, s1, lo, hi float64, c color.Color, ox, oy float64, widthFn func(s float64) (float64, float64)) {
 	s0, s1 = math.Max(0, s0), math.Min(rd.Len, s1)
 	step := 24.0
+	m := mwHalf + 120
 	for s := s0; s < s1; s += step {
 		e := math.Min(s+step+1, s1)
 		x0, y0, tx0, ty0 := rd.at(s)
+		if x0 < ox-m || y0 < oy-m || x0 > ox+chunkSz+m || y0 > oy+chunkSz+m {
+			continue
+		}
 		x1, y1, tx1, ty1 := rd.at(e)
 		a, b := lo, hi
 		a2, b2 := lo, hi
@@ -1261,17 +1315,27 @@ func (g *Game) band(img *ebiten.Image, rd *Road, s0, s1, lo, hi float64, c color
 		}
 		l0x, l0y := ty0, -tx0
 		l1x, l1y := ty1, -tx1
-		fillQuad(img, [4][2]float64{
+		tb.quad([4][2]float64{
 			{x0 + l0x*a - ox, y0 + l0y*a - oy}, {x1 + l1x*a2 - ox, y1 + l1y*a2 - oy},
 			{x1 + l1x*b2 - ox, y1 + l1y*b2 - oy}, {x0 + l0x*b - ox, y0 + l0y*b - oy}}, c)
 	}
 }
 
+func (g *Game) band(img *ebiten.Image, rd *Road, s0, s1, lo, hi float64, c color.Color, ox, oy float64, widthFn func(s float64) (float64, float64)) {
+	g.bandAdd(rd, s0, s1, lo, hi, c, ox, oy, widthFn)
+	tb.flush(img)
+}
+
 func (g *Game) dashes(img *ebiten.Image, rd *Road, s0, s1, lat, on, off, w float64, c color.Color, ox, oy float64) {
+	m := mwHalf + 120
 	for s := s0; s < s1; s += on + off {
-		e := math.Min(s+on, s1)
-		g.band(img, rd, s, e, lat-w/2, lat+w/2, c, ox, oy, nil)
+		x, y, _, _ := rd.at(s)
+		if x < ox-m || y < oy-m || x > ox+chunkSz+m || y > oy+chunkSz+m {
+			continue
+		}
+		g.bandAdd(rd, s, math.Min(s+on, s1), lat-w/2, lat+w/2, c, ox, oy, nil)
 	}
+	tb.flush(img)
 }
 
 func (g *Game) drawChunk(img *ebiten.Image, ox, oy float64) {
@@ -1295,7 +1359,7 @@ func (g *Game) drawChunk(img *ebiten.Image, ox, oy float64) {
 	// ground
 	for x := tx0; x < tx1; x++ {
 		for y := ty0; y < ty1; y++ {
-			r := rand.New(rand.NewSource(int64(x*7919 + y*104729)))
+			rf := func(k int) float64 { return hash2(x, y, 100+k) }
 			px, py := float64(x*tile), float64(y*tile)
 			switch g.tiles[x][y] {
 			case TField:
@@ -1312,7 +1376,7 @@ func (g *Game) drawChunk(img *ebiten.Image, ox, oy float64) {
 			case THedge:
 				R(px, py, tile, tile, rgb(80, 130, 60))
 				for k := 0; k < 3; k++ {
-					C(px+12+float64(k)*20+r.Float64()*6, py+32+r.Float64()*10-5, 16, rgb(45, 95, 45))
+					C(px+12+float64(k)*20+rf(k)*6, py+32+rf(k+3)*10-5, 16, rgb(45, 95, 45))
 				}
 			case TSidewalk, TRoad:
 				if g.cityAt(px, py) >= 0 {
@@ -1327,11 +1391,11 @@ func (g *Game) drawChunk(img *ebiten.Image, ox, oy float64) {
 			case TGrass, TTree:
 				R(px, py, tile, tile, rgb(72, 140, 62))
 				for i := 0; i < 6; i++ {
-					R(px+r.Float64()*60, py+r.Float64()*60, 3, 3, rgb(85, 158, 72))
+					R(px+rf(i)*60, py+rf(i+6)*60, 3, 3, rgb(85, 158, 72))
 				}
 			case TWater:
 				R(px, py, tile, tile, rgb(60, 120, 190))
-				R(px+10+r.Float64()*30, py+15+r.Float64()*30, 16, 2, rgb(110, 165, 220))
+				R(px+10+rf(1)*30, py+15+rf(2)*30, 16, 2, rgb(110, 165, 220))
 			case TYard, TYardBuilding:
 				fl := rgb(120, 120, 120)
 				if pi := g.yardOf[x][y]; pi > 0 {

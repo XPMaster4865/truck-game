@@ -64,8 +64,8 @@ func (g *Game) load() bool {
 		return false
 	}
 	var d SaveData
-	if json.Unmarshal(b, &d) != nil {
-		return false
+	if json.Unmarshal(b, &d) != nil || d.Version < 4 {
+		return false // saves from older versions don't fit the new map: start fresh
 	}
 	g.reset()
 	g.money, g.deliveries, g.finesTotal = d.Money, d.Deliveries, d.FinesTotal

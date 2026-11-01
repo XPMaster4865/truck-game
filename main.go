@@ -51,6 +51,9 @@ type Game struct {
 	gpsTurn       int
 	mapOX, mapOY  float64
 	mapPanY       float64
+	carGrid       map[int][]*Car
+	carsTo        map[int][]*Car
+	carsRoad      map[int][]*Car
 	jmCol         int
 	jmFrom, jmTo  int
 	jmCargo       int
@@ -297,6 +300,7 @@ func (g *Game) Update() error {
 		g.buildWorld()
 	}
 	g.frameNo++
+	g.prefetchChunk()
 	if inpututil.IsKeyJustPressed(ebiten.KeyF) || inpututil.IsKeyJustPressed(ebiten.KeyF11) {
 		ebiten.SetFullscreen(!ebiten.IsFullscreen())
 	}
@@ -396,9 +400,9 @@ func (g *Game) Update() error {
 		g.flash("Sat-nav pin cleared.")
 	}
 	if g.fuel[g.cur] <= 0 && inpututil.IsKeyJustPressed(ebiten.KeyR) {
-		g.money -= 300
-		g.fuel[g.cur] = 60
-		g.flash("Recovery truck topped you up with 60 litres. -£300")
+		g.money -= 150
+		g.fuel[g.cur] = models[g.cur].Tank * 0.25
+		g.flash("Recovery truck topped you up (25%). -£150")
 	}
 	g.clock += dt
 	if g.hitCool > 0 {
@@ -669,9 +673,9 @@ func (g *Game) drawHUD(screen *ebiten.Image) {
 	}
 	if g.fuel[g.cur] <= 0 {
 		if m.Electric {
-			warn("BATTERY FLAT!  Press R to call recovery (£300)", rgb(255, 180, 40))
+			warn("BATTERY FLAT!  Press R to call recovery (£150)", rgb(255, 180, 40))
 		} else {
-			warn("OUT OF FUEL!  Press R to call recovery (£300)", rgb(255, 180, 40))
+			warn("OUT OF FUEL!  Press R to call recovery (£150)", rgb(255, 180, 40))
 		}
 	} else if g.fuel[g.cur] < m.Tank*0.15 {
 		if m.Electric {
@@ -1152,7 +1156,7 @@ func main() {
 	ebiten.SetWindowSize(screenW, screenH)
 	ebiten.SetWindowTitle("Truck Haul")
 	ebiten.SetWindowResizingMode(ebiten.WindowResizingModeEnabled)
-	if err := ebiten.RunGame(NewGame()); err != nil {
+	if err := ebiten.RunGame(guarded{NewGame()}); err != nil {
 		if runWithSoundFallback(err) {
 			return
 		}

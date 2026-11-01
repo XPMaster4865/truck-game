@@ -537,7 +537,7 @@ func jobFor(src, dst int, cargo string) Job {
 	sx, sy := places[src].bayCenter()
 	dx, dy := places[dst].bayCenter()
 	dist := math.Abs(sx-dx) + math.Abs(sy-dy)
-	pay := int((150+dist*0.22)/10) * 10
+	pay := int((250+dist*0.33)/10) * 10
 	return Job{Src: src, Dst: dst, Pay: pay, TimeLimit: math.Round(dist/120 + 35), Cargo: cargo}
 }
 
