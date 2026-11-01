@@ -615,28 +615,59 @@ func (g *Game) junctionConflict(c *Car, majorOnly bool) bool {
 }
 
 // oncomingConflict: is there oncoming traffic going ahead / left that a right-turner must wait for?
+// oppositeApproach is the road coming into the junction from straight ahead of car c
+// (the most head-on approach, even when the roads don't line up perfectly).
+func (g *Game) oppositeApproach(node, road int) int {
+	in := g.apprOf(node, road)
+	best, bd := -1, -0.3
+	for _, a := range g.nodes[node].Appr {
+		if a.Road == road {
+			continue
+		}
+		if d := a.Tx*in.Tx + a.Ty*in.Ty; d < bd {
+			best, bd = a.Road, d
+		}
+	}
+	return best
+}
+
+// oncomingConflict: a right-turner must let oncoming traffic going straight on or
+// turning left go first. Uses time-to-arrive so fast cars further away still count.
 func (g *Game) oncomingConflict(c *Car) bool {
 	node := c.to
-	in := g.apprOf(node, c.road)
+	opp := g.oppositeApproach(node, c.road)
+	if opp < 0 {
+		return false
+	}
 	for _, o := range g.carsTo[node] {
-		if o == c || o.to != node || o.road == c.road || o.chase || o.crashed > 0 {
+		if o == c || o.to != node || o.road != opp || o.chase || o.crashed > 0 || o.broken > 0 {
 			continue
 		}
-		ap := g.apprOf(node, o.road)
-		if ap == nil || ap.Tx*in.Tx+ap.Ty*in.Ty > -0.6 || o.turnSign > 0 {
-			continue
+		if o.turnSign > 0 && len(g.nodes[node].Roads) >= 3 {
+			continue // two right-turners can pass each other
 		}
 		if o.inTurn {
-			return true
+			if o.t < o.turnLen*0.8 {
+				return true // already crossing the junction
+			}
+			continue
 		}
 		d := g.carL(o) - o.t
-		if d < 240 && o.speed > 5 {
+		if o.speed < 5 && d > 30 {
+			continue // waiting at its own red light / line
+		}
+		if d < 70+o.speed*2.6 {
 			return true
 		}
 	}
-	if g.truckApproaching(node, 300) {
+	// the player's truck coming the other way
+	n := g.nodes[node]
+	dT := math.Hypot(n.X-g.truck.X, n.Y-g.truck.Y)
+	if math.Abs(g.truck.Speed) > 10 && dT < 90+math.Abs(g.truck.Speed)*2.6 {
+		in := g.apprOf(node, c.road)
 		hx, hy := math.Cos(g.truck.Angle), math.Sin(g.truck.Angle)
-		if hx*in.Tx+hy*in.Ty < -0.6 {
+		toward := (hx*(n.X-g.truck.X) + hy*(n.Y-g.truck.Y)) / math.Max(dT, 1)
+		if hx*in.Tx+hy*in.Ty < -0.5 && (toward > 0.3 || dT < n.R+20) {
 			return true
 		}
 	}
@@ -915,13 +946,18 @@ func (g *Game) updateCars() {
 				desired = math.Min(desired, math.Sqrt(ts*ts+2*350*math.Max(0, L-c.t)))
 			}
 		} else if c.turnSign > 0 && !c.yielded && !c.isEV() && len(node.Roads) >= 3 {
-			// turning right across oncoming traffic: edge out and wait for a gap
+			// turning right across oncoming traffic: edge out to the middle and wait for a gap
 			waitAt := c.turnLen * 0.32
-			if g.oncomingConflict(c) {
+			switch {
+			case c.t > waitAt+8:
+				c.yielded = true // already committed, don't stop in the path of others
+			case g.oncomingConflict(c):
 				desired = math.Min(desired, follow(waitAt-c.t))
 				holding = true
-			} else {
-				c.yielded = true
+			case c.t >= waitAt-25:
+				c.yielded = true // clear: go
+			default:
+				desired = math.Min(desired, 70) // creep forward to the waiting point
 			}
 		}
 		prev := c.speed
@@ -993,7 +1029,7 @@ func (g *Game) updateCars() {
 				n++
 			}
 		}
-		if n < 18*len(g.motorways) {
+		if n < 9*len(g.motorways) {
 			mi := g.motorways[g.rng.Intn(len(g.motorways))]
 			for _, c := range g.cars {
 				if c.isEV() || c.chase || c.kind == kPolice || g.isMotor(c.road) || g.visible(c.x, c.y, 300) {

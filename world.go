@@ -36,6 +36,7 @@ const (
 	camCols          = 6
 	camRows          = 4
 	camOY            = mwY - camS
+	hubX, hubY       = 14000.0, 9500.0
 	worldW           = 28672
 	worldH           = 20992
 	mapW             = worldW / tile
@@ -324,10 +325,10 @@ var places = []*Place{
 	{Name: "Essco Manchester", City: 2, Color: rgb(220, 20, 40), Floor: rgb(120, 122, 128), Fuel: 0.86},
 	{Name: "Ionnity Manchester", City: 2, Color: rgb(90, 40, 160), Floor: rgb(120, 125, 130), Charge: 0.33},
 	// ---- motorway services ----
-	{Name: "Welcome Brake Services", City: -1, MW: 1, Side: 1, Frac: 0.40, Color: rgb(200, 30, 60), Floor: rgb(118, 120, 126), Fuel: 1.01, Charge: 0.43},
-	{Name: "Roadchief Services", City: -1, MW: 1, Side: -1, Frac: 0.58, Color: rgb(230, 120, 0), Floor: rgb(118, 120, 126), Fuel: 0.99, Charge: 0.41},
-	{Name: "Watferd Gap Services", City: -1, MW: 2, Side: 1, Frac: 0.42, Color: rgb(40, 120, 60), Floor: rgb(118, 120, 126), Fuel: 1.03, Charge: 0.44},
-	{Name: "Toddingtun Services", City: -1, MW: 2, Side: -1, Frac: 0.6, Color: rgb(200, 90, 20), Floor: rgb(118, 120, 126), Fuel: 1.01, Charge: 0.42},
+	{Name: "Welcome Brake Services", City: -1, MW: 1, Side: 1, Frac: 0.42, Color: rgb(200, 30, 60), Floor: rgb(118, 120, 126), Fuel: 1.01, Charge: 0.43},
+	{Name: "Roadchief Services", City: -1, MW: 2, Side: -1, Frac: 0.42, Color: rgb(230, 120, 0), Floor: rgb(118, 120, 126), Fuel: 0.99, Charge: 0.41},
+	{Name: "Watferd Gap Services", City: -1, MW: 3, Side: 1, Frac: 0.42, Color: rgb(40, 120, 60), Floor: rgb(118, 120, 126), Fuel: 1.03, Charge: 0.44},
+	{Name: "Toddingtun Services", City: -1, MW: 4, Side: -1, Frac: 0.42, Color: rgb(200, 90, 20), Floor: rgb(118, 120, 126), Fuel: 1.01, Charge: 0.42},
 }
 
 type Rect struct {
@@ -398,20 +399,11 @@ func (g *Game) isMotor(r int) bool { return r >= 0 && g.roads[r].Class == clMoto
 
 // motorwayDest names where each direction of a motorway is heading.
 func (g *Game) motorwayDest(r int, forward bool) string {
-	rd := g.roads[r]
-	switch rd.Name {
-	case "M11":
-		if forward {
-			return "Cambridge"
-		}
-		return "London"
-	case "M1":
-		if forward {
-			return "Manchester"
-		}
-		return "London"
+	d := g.mwDest[r]
+	if forward {
+		return d[0]
 	}
-	return ""
+	return d[1]
 }
 
 func (g *Game) addNode(x, y float64, city int) int {
@@ -598,36 +590,83 @@ func (g *Game) generate() {
 	man := g.genCity(r, 2)
 	g.motorways = nil
 
-	// M11: London -> link road -> motorway -> link road -> Cambridge
+	g.mwDest = map[int][2]string{}
+	addMW := func(a, b int, pts [][2]float64, name, fwd, back string) {
+		ri := g.addRoad(a, b, pts, clMotorway, 70, name, -1)
+		g.motorways = append(g.motorways, ri)
+		g.mwDest[ri] = [2]string{fwd, back}
+	}
+	// sample a wiggly straight motorway and split it in half at a junction node
+	wiggle := func(x0, y0, x1, y1, amp float64) [][2]float64 {
+		l := math.Hypot(x1-x0, y1-y0)
+		px, py := -(y1-y0)/l, (x1-x0)/l
+		n := int(l) / 32
+		var pts [][2]float64
+		for i := 0; i <= n; i++ {
+			u := float64(i) / float64(n)
+			o := amp * math.Sin(2*math.Pi*u) * math.Sin(math.Pi*u)
+			pts = append(pts, [2]float64{x0 + (x1-x0)*u + px*o, y0 + (y1-y0)*u + py*o})
+		}
+		return pts
+	}
+	split := func(pts [][2]float64) ([][2]float64, [][2]float64) {
+		h := len(pts) / 2
+		return pts[:h+1], pts[h:]
+	}
+	cubic := func(p0, p1, p2, p3 [2]float64) [][2]float64 {
+		l := math.Hypot(p3[0]-p0[0], p3[1]-p0[1])
+		n := int(l/28) + 2
+		var pts [][2]float64
+		for i := 0; i <= n; i++ {
+			u := float64(i) / float64(n)
+			a, b, c, d := (1-u)*(1-u)*(1-u), 3*(1-u)*(1-u)*u, 3*(1-u)*u*u, u*u*u
+			pts = append(pts, [2]float64{a*p0[0] + b*p1[0] + c*p2[0] + d*p3[0], a*p0[1] + b*p1[1] + c*p2[1] + d*p3[1]})
+		}
+		return pts
+	}
+
+	// M11: London -> J2 -> Cambridge
 	la := lon[lonCols-1][2]
 	m0 := g.addNode(mw0X, mwY, -1)
 	m1 := g.addNode(mw1X, mwY, -1)
 	cb := cam[0][1]
 	g.addRoad(la, m0, curve(g.nodes[la].X, g.nodes[la].Y, mw0X, mwY, 0, false), clLink, 50, "M11 Link Road", -1)
-	var mp [][2]float64
-	span := mw1X - mw0X
-	n := int(span) / 32
-	for i := 0; i <= n; i++ {
-		u := float64(i) / float64(n)
-		mp = append(mp, [2]float64{mw0X + (mw1X-mw0X)*u, mwY + 380*math.Sin(2*math.Pi*u)*math.Sin(math.Pi*u)})
-	}
-	g.motorways = append(g.motorways, g.addRoad(m0, m1, mp, clMotorway, 70, "M11", -1))
+	w11a, w11b := split(wiggle(mw0X, mwY, mw1X, mwY, -380))
+	j2 := g.addNode(w11a[len(w11a)-1][0], w11a[len(w11a)-1][1], -1)
+	addMW(m0, j2, w11a, "M11", "Cambridge / M48", "London")
+	addMW(j2, m1, w11b, "M11", "Cambridge", "London / M48")
 	g.addRoad(m1, cb, curve(mw1X, mwY, g.nodes[cb].X, g.nodes[cb].Y, 0, false), clLink, 50, "M11 Link Road", -1)
 
-	// M1: London (north side) -> motorway north -> Manchester
+	// M1: London (north side) -> J1 -> Manchester
 	ln := lon[3][0]
 	s0 := g.addNode(m1X, m1BotY, -1)
 	s1 := g.addNode(m1X, m1TopY, -1)
 	mn := man[2][manRows-1]
 	g.addRoad(ln, s0, curve(g.nodes[ln].X, g.nodes[ln].Y, m1X, m1BotY, 0, false), clLink, 50, "M1 Link Road", -1)
-	mp = nil
-	n = int(m1Len) / 32
-	for i := 0; i <= n; i++ {
-		u := float64(i) / float64(n)
-		mp = append(mp, [2]float64{m1X + 420*math.Sin(2*math.Pi*u)*math.Sin(math.Pi*u), m1BotY - m1Len*u})
-	}
-	g.motorways = append(g.motorways, g.addRoad(s0, s1, mp, clMotorway, 70, "M1", -1))
+	w1a, w1b := split(wiggle(m1X, m1BotY, m1X, m1TopY, 420))
+	j1 := g.addNode(w1a[len(w1a)-1][0], w1a[len(w1a)-1][1], -1)
+	addMW(s0, j1, w1a, "M1", "Manchester / M45", "London")
+	addMW(j1, s1, w1b, "M1", "Manchester", "London / M45")
 	g.addRoad(s1, mn, curve(m1X, m1TopY, g.nodes[mn].X, g.nodes[mn].Y, 0, false), clLink, 50, "M1 Link Road", -1)
+
+	// M14: Manchester -> central interchange -> Cambridge
+	hub := g.addNode(hubX, hubY, -1)
+	me := man[manCols-1][2]
+	ma := g.addNode(g.nodes[me].X+700, g.nodes[me].Y, -1)
+	g.addRoad(me, ma, curve(g.nodes[me].X, g.nodes[me].Y, g.nodes[ma].X, g.nodes[ma].Y, 0, false), clLink, 50, "M14 Link Road", -1)
+	addMW(ma, hub, cubic([2]float64{g.nodes[ma].X, g.nodes[ma].Y}, [2]float64{g.nodes[ma].X + 4500, g.nodes[ma].Y},
+		[2]float64{hubX, hubY - 3500}, [2]float64{hubX, hubY}), "M14", "Cambridge / Interchange", "Manchester")
+	cn := cam[2][0]
+	mbx, mby := g.nodes[cn].X, g.nodes[cn].Y-750
+	mb := g.addNode(mbx, mby, -1)
+	addMW(hub, mb, cubic([2]float64{hubX, hubY}, [2]float64{hubX + 5000, hubY},
+		[2]float64{mbx, mby - 4000}, [2]float64{mbx, mby}), "M14", "Cambridge", "Manchester / Interchange")
+	g.addRoad(mb, cn, curve(mbx, mby, g.nodes[cn].X, g.nodes[cn].Y, 0, false), clLink, 50, "M14 Link Road", -1)
+	// spurs joining the M1 and M11 to the interchange
+	addMW(j1, hub, cubic([2]float64{g.nodes[j1].X, g.nodes[j1].Y}, [2]float64{g.nodes[j1].X + 3500, g.nodes[j1].Y},
+		[2]float64{hubX - 3500, hubY}, [2]float64{hubX, hubY}), "M45", "Interchange (M14)", "M1")
+	addMW(j2, hub, cubic([2]float64{g.nodes[j2].X, g.nodes[j2].Y}, [2]float64{g.nodes[j2].X, g.nodes[j2].Y - 2500},
+		[2]float64{hubX, hubY + 3000}, [2]float64{hubX, hubY}), "M48", "Interchange (M14)", "M11")
 
 	g.buildSegIndex()
 	g.setupJunctions(r)
@@ -775,7 +814,15 @@ func (g *Game) setupJunctions(r *rand.Rand) {
 				mains++
 			}
 		}
+		motorJ := false
+		for _, ri := range n.Roads {
+			if g.roads[ri].Class == clMotorway {
+				motorJ = true
+			}
+		}
 		switch {
+		case motorJ:
+			n.Ctrl = ctrlLights // motorway interchanges are signal controlled
 		case mains >= 2 && len(n.Roads) == 4:
 			n.Ctrl = ctrlLights
 		case mains >= 2 && len(n.Roads) == 3 && r.Float64() < 0.5:
@@ -1259,7 +1306,7 @@ func fillQuad(dst *ebiten.Image, pts [4][2]float64, c color.Color) {
 	for i, p := range pts {
 		vs[i] = ebiten.Vertex{DstX: float32(p[0]), DstY: float32(p[1]), SrcX: 1, SrcY: 1, ColorR: fr, ColorG: fg, ColorB: fb, ColorA: fa}
 	}
-	op := &ebiten.DrawTrianglesOptions{AntiAlias: true, ColorScaleMode: ebiten.ColorScaleModePremultipliedAlpha}
+	op := &ebiten.DrawTrianglesOptions{AntiAlias: false, ColorScaleMode: ebiten.ColorScaleModePremultipliedAlpha}
 	dst.DrawTriangles(vs, []uint16{0, 1, 2, 0, 2, 3}, whiteSub, op)
 }
 
@@ -1289,7 +1336,7 @@ func (b *triBatch) flush(dst *ebiten.Image) {
 	if len(b.is) == 0 {
 		return
 	}
-	op := &ebiten.DrawTrianglesOptions{AntiAlias: true, ColorScaleMode: ebiten.ColorScaleModePremultipliedAlpha}
+	op := &ebiten.DrawTrianglesOptions{AntiAlias: false, ColorScaleMode: ebiten.ColorScaleModePremultipliedAlpha}
 	dst.DrawTriangles(b.vs, b.is, whiteSub, op)
 	b.vs, b.is = b.vs[:0], b.is[:0]
 }

@@ -36,6 +36,7 @@ type Game struct {
 	nodes         []Node
 	roads         []*Road
 	motorways     []int
+	mwDest        map[int][2]string
 	segIdx        map[int][]segRef
 	hornOn        bool
 	aiHonk        float64
@@ -240,11 +241,11 @@ func fillRect(dst *ebiten.Image, x, y, w, h float64, c color.Color) {
 }
 
 func fillCircle(dst *ebiten.Image, x, y, r float64, c color.Color) {
-	vector.DrawFilledCircle(dst, float32(x), float32(y), float32(r), c, true)
+	vector.DrawFilledCircle(dst, float32(x), float32(y), float32(r), c, smoothShapes)
 }
 
 func strokeLine(dst *ebiten.Image, x1, y1, x2, y2, w float64, c color.Color) {
-	vector.StrokeLine(dst, float32(x1), float32(y1), float32(x2), float32(y2), float32(w), c, true)
+	vector.StrokeLine(dst, float32(x1), float32(y1), float32(x2), float32(y2), float32(w), c, smoothShapes)
 }
 
 func fillTri(dst *ebiten.Image, x1, y1, x2, y2, x3, y3 float64, c color.RGBA) {
@@ -252,7 +253,7 @@ func fillTri(dst *ebiten.Image, x1, y1, x2, y2, x3, y3 float64, c color.RGBA) {
 	v := func(x, y float64) ebiten.Vertex {
 		return ebiten.Vertex{DstX: float32(x), DstY: float32(y), SrcX: 1, SrcY: 1, ColorR: cr, ColorG: cg, ColorB: cb, ColorA: ca}
 	}
-	dst.DrawTriangles([]ebiten.Vertex{v(x1, y1), v(x2, y2), v(x3, y3)}, []uint16{0, 1, 2}, whiteSub, &ebiten.DrawTrianglesOptions{AntiAlias: true})
+	dst.DrawTriangles([]ebiten.Vertex{v(x1, y1), v(x2, y2), v(x3, y3)}, []uint16{0, 1, 2}, whiteSub, &ebiten.DrawTrianglesOptions{AntiAlias: smoothShapes})
 }
 
 func drawText(dst *ebiten.Image, s string, f *text.GoTextFace, x, y float64, c color.Color, align text.Align) {
@@ -777,6 +778,8 @@ func (g *Game) drawJunctionAhead(screen *ebiten.Image) {
 }
 
 func (g *Game) drawDash(screen *ebiten.Image) {
+	smoothShapes = true
+	defer func() { smoothShapes = false }()
 	m := g.model()
 	px, py := 12.0, screenH-178.0
 	panel(screen, px, py, 380, 166)
@@ -1163,3 +1166,6 @@ func main() {
 		log.Fatal(err)
 	}
 }
+
+// smoothShapes turns on anti-aliasing; it's expensive, so only the HUD dials use it.
+var smoothShapes = false
