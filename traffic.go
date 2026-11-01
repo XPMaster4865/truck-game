@@ -1237,12 +1237,26 @@ func (g *Game) startChase(reason string, amount int) {
 	g.chaseReason, g.chaseFine = reason, amount
 	g.chaseTime = 0
 	g.stopTime = 0
+	g.escape = 0
 	g.flash("POLICE! Pull over and stop - " + reason)
 }
 
 func (g *Game) updateChaser(c *Car) {
 	td := math.Hypot(g.truck.X-c.x, g.truck.Y-c.y)
-	target := math.Min(620, math.Abs(g.truck.Speed)+150)
+	// police are quick (about 64 mph flat out) but not unbeatable
+	target := math.Min(490, math.Abs(g.truck.Speed)+150)
+	// they have to slow down for traffic in their way - weave through it to get away
+	g.carsNear(c.x, c.y, func(o *Car) {
+		if o == c {
+			return
+		}
+		ox, oy := o.x-c.x, o.y-c.y
+		along := ox*c.hx + oy*c.hy
+		lat := ox*-c.hy + oy*c.hx
+		if along > 0 && along < 110 && math.Abs(lat) < 26 {
+			target = math.Min(target, math.Max(60, o.speed))
+		}
+	})
 	if td < 130 {
 		target = 0
 	} else if td < 200 {

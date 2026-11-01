@@ -482,26 +482,54 @@ func (g *Game) updateLaw() {
 		g.evBlockedTime = 0
 	}
 
-	// police chase / pull over
+	// police chase / pull over / pursuit
 	if g.chaser != nil {
 		g.chaseTime += dt
 		d := math.Hypot(g.chaser.x-t.X, g.chaser.y-t.Y)
-		if d < 220 && math.Abs(t.Speed) < 12 {
+		pursuit := g.chaseTime > 8 // didn't stop when flashed: now it's a pursuit
+		// pulled over: stopped near the police car, or boxed in by it
+		if (d < 220 && math.Abs(t.Speed) < 12) || (pursuit && d < 90 && math.Abs(t.Speed) < 60) {
 			g.stopTime += dt
 			if g.stopTime > 1.5 {
-				g.issueFine("POLICE: "+g.chaseReason, g.chaseFine)
-				g.flash("The officer gives you a ticket and a stern look.")
+				if pursuit {
+					g.issueFine("POLICE: "+g.chaseReason+" + failing to stop", g.chaseFine+500)
+					g.flash("Caught! The officer is NOT impressed.")
+				} else {
+					g.issueFine("POLICE: "+g.chaseReason, g.chaseFine)
+					g.flash("The officer gives you a ticket and a stern look.")
+				}
 				g.endChase()
+				g.escape = 0
 			}
 		} else {
 			g.stopTime = 0
 		}
-		if g.chaser != nil && g.chaseTime > 30 {
-			g.issueFine("POLICE: Failing to stop for police", 1000)
+		// outrunning them: stay far enough ahead for long enough and they lose you
+		if g.chaser != nil {
+			if d > 1100 {
+				g.escape += dt
+			} else {
+				g.escape = math.Max(0, g.escape-dt*0.6)
+			}
+			if g.escape >= escapeTime {
+				g.flash("You lost the police!")
+				g.endChase()
+				g.escape = 0
+				for _, k := range []string{"speed", "wrong", "pave", "careless"} {
+					g.cool[k] = 40 // lie low for a bit
+				}
+			}
+		}
+		if g.chaser != nil && g.chaseTime > 120 {
+			g.issueFine("POLICE: Failing to stop (fine sent by post)", 1000)
+			g.flash("The police called off the chase... but they got your number plate.")
 			g.endChase()
+			g.escape = 0
 		}
 	}
 }
+
+const escapeTime = 6.0
 
 // ---------- jobs, fuel stations, dealer ----------
 

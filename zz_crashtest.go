@@ -218,6 +218,37 @@ func init() {
 			}
 		}
 	}
+	// pursuit scenarios
+	for _, scen := range []string{"escape", "caught"} {
+		g.reset()
+		g.state = stPlay
+		x, y := g.nodes[0].X, g.nodes[0].Y
+		g.truck.X, g.truck.Y, g.truck.Speed = x, y, 0
+		pol := g.makeCar(kPolice)
+		pol.x, pol.y, pol.hx, pol.hy = x-150, y, 1, 0
+		g.cars = append(g.cars, pol)
+		g.trail = [][2]float64{{x - 100, y}, {x, y}}
+		g.startChase("Speeding (45 mph in a 30)", 100)
+		m0 := g.money
+		for i := 0; i < 60*30 && g.chaser != nil; i++ {
+			if scen == "escape" && i > 60*9 {
+				g.truck.X += 25 // flat out away from them
+				g.trail = append(g.trail, [2]float64{g.truck.X, g.truck.Y})
+				g.truck.Speed = 500
+			} else if scen == "caught" && i > 60*9 {
+				g.truck.Speed = 0
+			} else {
+				g.truck.X += 6
+				g.trail = append(g.trail, [2]float64{g.truck.X, g.truck.Y})
+				g.truck.Speed = 300
+			}
+			g.clock += dt
+			g.updateCars()
+			g.updateLaw()
+		}
+		fmt.Printf("pursuit %s: chaser=%v msg=%q fined=%d\n", scen, g.chaser != nil, g.msg, m0-g.money)
+	}
+	g.reset()
 	fmt.Printf("slip drive test: %d hits over %d slip roads, lamps=%d\n", hits, len(g.slips), len(g.lamps))
 	if err := ebiten.RunGame(&ct{Game: g}); err != nil {
 		fmt.Println("err", err)

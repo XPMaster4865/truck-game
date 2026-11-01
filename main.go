@@ -85,6 +85,7 @@ type Game struct {
 	yardLamps        [][2]float64
 	fixedHour        float64
 	realClock        bool
+	escape           float64
 	net              *Net
 	netTick          int
 	typing           bool
@@ -718,7 +719,20 @@ func (g *Game) drawHUD(screen *ebiten.Image) {
 		wy += 40
 	}
 	if g.chaser != nil {
-		warn(fmt.Sprintf("POLICE - PULL OVER AND STOP! (%ds)", int(30-g.chaseTime)), rgb(90, 150, 255))
+		d := math.Hypot(g.chaser.x-g.truck.X, g.chaser.y-g.truck.Y)
+		if g.chaseTime <= 8 {
+			warn(fmt.Sprintf("POLICE - PULL OVER AND STOP! (%ds)", int(9-g.chaseTime)), rgb(90, 150, 255))
+		} else {
+			warn(fmt.Sprintf("POLICE PURSUIT - %d m behind - stop, or lose them!", int(d/10)), rgb(255, 80, 80))
+			// escape meter
+			bw := 360.0
+			bx := screenW/2 - bw/2
+			by := wy - 8
+			fillRect(screen, bx, by, bw, 14, rgb(40, 40, 50))
+			fillRect(screen, bx, by, bw*math.Min(1, g.escape/escapeTime), 14, rgb(90, 220, 110))
+			drawText(screen, "ESCAPE", faceSign, bx-8, by-1, color.White, text.AlignEnd)
+			wy += 18
+		}
 	}
 	if g.wrongTimer > 0.4 {
 		warn("WRONG SIDE OF THE ROAD - KEEP LEFT!", rgb(255, 90, 90))
@@ -1226,7 +1240,7 @@ func main() {
 }
 
 // gameVersion is shown on the title screen and checked between online players.
-const gameVersion = "v5.6"
+const gameVersion = "v5.7"
 
 // smoothShapes turns on anti-aliasing; it's expensive, so only the HUD dials use it.
 var smoothShapes = false
