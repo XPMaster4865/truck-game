@@ -36,6 +36,8 @@ type Game struct {
 	nodes         []Node
 	roads         []*Road
 	motorways     []int
+	slips         []*Road
+	slipTile      [mapW][mapH]bool
 	mwDest        map[int][2]string
 	segIdx        map[int][]segRef
 	hornOn        bool
@@ -633,6 +635,9 @@ func (g *Game) drawHUD(screen *ebiten.Image) {
 				drawText(screen, "Stop the truck to "+strings.ToLower(verb[:len(verb)-3]), faceSmall, screenW/2, screenH/2+94, rgb(255, 220, 80), text.AlignCenter)
 			}
 		}
+	}
+	if g.wrongPump != "" && !g.fuelling {
+		drawTextShadow(screen, g.wrongPump, faceMed, screenW/2, screenH/2+90, rgb(255, 180, 60), text.AlignCenter)
 	}
 	if g.fuelling {
 		panel(screen, screenW/2-150, screenH/2+80, 300, 50)

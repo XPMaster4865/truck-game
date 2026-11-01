@@ -245,6 +245,9 @@ type Car struct {
 	cleared, yielded    bool
 	honkCD              float64
 	truckWait           float64
+	offRate             float64 // sideways drift per pixel travelled (lane changes)
+	id                  int
+	dhx, dhy            float64 // drawn heading
 }
 
 func (c *Car) isEV() bool { return c.kind == kAmbulance || c.kind == kFire || c.kind == kPoliceEV }
@@ -267,8 +270,11 @@ func (c *Car) circles() [][2]float64 {
 var carColors = []color.RGBA{rgb(50, 110, 200), rgb(230, 230, 230), rgb(40, 40, 45), rgb(220, 190, 40),
 	rgb(60, 160, 80), rgb(180, 60, 160), rgb(240, 140, 40), rgb(120, 200, 220), rgb(150, 30, 30), rgb(160, 160, 165)}
 
+var carIDs int
+
 func (g *Game) makeCar(kind int) *Car {
-	c := &Car{kind: kind, lane: laneOff}
+	carIDs++
+	c := &Car{kind: kind, lane: laneOff, id: carIDs}
 	switch kind {
 	case kCar:
 		c.half, c.width = 22, 22
@@ -376,7 +382,7 @@ func (g *Game) respawnCar(c *Car) {
 		}
 		ok := true
 		for _, o := range g.cars {
-			if o != c && math.Hypot(o.x-c.x, o.y-c.y) < 90 {
+			if o != c && math.Hypot(o.x-c.x, o.y-c.y) < 150 {
 				ok = false
 				break
 			}
@@ -643,8 +649,17 @@ func (g *Game) oncomingConflict(c *Car) bool {
 		if o == c || o.to != node || o.road != opp || o.chase || o.crashed > 0 || o.broken > 0 {
 			continue
 		}
-		if o.turnSign > 0 && len(g.nodes[node].Roads) >= 3 {
-			continue // two right-turners can pass each other
+		if o.turnSign > 0 {
+			// two right-turners from opposite sides: their paths cross, so the one
+			// further into its turn goes first (ties broken by id) and the other waits
+			if !o.inTurn {
+				continue
+			}
+			fo, fc := o.t/o.turnLen, c.t/c.turnLen
+			if fo > fc+0.02 || (math.Abs(fo-fc) <= 0.02 && o.id < c.id) {
+				return true
+			}
+			continue
 		}
 		if o.inTurn {
 			if o.t < o.turnLen*0.8 {
@@ -674,12 +689,30 @@ func (g *Game) oncomingConflict(c *Car) bool {
 	return false
 }
 
+func (g *Game) boxBusy(c *Car) bool {
+	in := g.apprOf(c.to, c.road)
+	for _, o := range g.carsTo[c.to] {
+		if o == c || !o.inTurn || o.road == c.road || o.chase {
+			continue
+		}
+		if o.t > o.turnLen*0.85 {
+			continue // just leaving
+		}
+		// opposite-direction traffic going straight on is fine; anything crossing is not
+		if math.Abs(o.hx*in.Tx+o.hy*in.Ty) < 0.75 || o.turnSign != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (g *Game) exitBlocked(c *Car) bool {
 	for _, o := range g.carsRoad[c.nroad] {
 		if o == c || o.inTurn || o.road != c.nroad || o.from != c.to {
 			continue
 		}
-		if o.t < c.half+o.half+30 && o.speed < 15 {
+		// don't turn into a road whose start is occupied by a queue (stopped or crawling)
+		if o.t < c.half+o.half+45 && o.speed < 120 {
 			return true
 		}
 	}
@@ -835,9 +868,19 @@ func (g *Game) updateCars() {
 				}
 				along := ox*c.hx + oy*c.hy
 				lat := ox*rx + oy*ry
-				latLim := 16.0
-				if (o.pull > 0.5 || o.broken > 0) && !c.inTurn {
+				// as wide as the two vehicles really are (lorries are wider than cars),
+				// and wider still while either is going round a corner
+				latLim := (c.width+o.width)/2 + 2
+				if c.inTurn || o.inTurn {
+					latLim += 8
+				}
+				// cars that aren't pulling over themselves can pass pulled-over / broken-down cars
+				if (o.pull > 0.5 || o.broken > 0) && !c.inTurn && !c.pulling && c.pull < 0.3 {
 					latLim = 6
+				}
+				// approaching the end of a motorway the lanes merge: watch all lanes and zip in
+				if motor && L-c.t < 1500 && o.road == c.road && o.dir == c.dir {
+					latLim = 75
 				}
 				look := 170.0
 				if motor {
@@ -940,6 +983,10 @@ func (g *Game) updateCars() {
 				if !c.cleared && g.exitBlocked(c) {
 					hold(dist)
 				}
+				// don't enter while a vehicle crossing our path is still in the junction
+				if dist < 60 && g.boxBusy(c) {
+					hold(dist)
+				}
 			}
 			if c.turnSign != 0 || len(node.Roads) < 3 {
 				ts := turnSpeed()
@@ -971,8 +1018,12 @@ func (g *Game) updateCars() {
 			c.hazard = 3
 		}
 		// deadlock breakers
+		// deadlock breaker: only for vehicles CROSSING each other in a junction,
+		// never for a queue of cars going the same way
 		headOn := blocker != nil && blocker.hx*c.hx+blocker.hy*c.hy < -0.5
-		if c.speed < 3 && blocker != nil && (c.inTurn || blocker.inTurn || headOn) {
+		sameWay := blocker != nil && blocker.hx*c.hx+blocker.hy*c.hy > 0.7 &&
+			blocker.road == c.road && blocker.dir == c.dir && blocker.inTurn == c.inTurn
+		if c.speed < 3 && blocker != nil && !sameWay && (c.inTurn || blocker.inTurn || headOn) {
 			c.wait += dt
 			if c.wait > 2.5 {
 				c.ghost = 1.5
@@ -1000,9 +1051,40 @@ func (g *Game) updateCars() {
 		} else {
 			c.truckWait = 0
 		}
+		// final safety: never drive into the back of the vehicle in front
+		if c.speed > 0 {
+			step := c.speed * dt
+			g.carsNear(c.x, c.y, func(o *Car) {
+				if o == c || o.chase || o.hx*c.hx+o.hy*c.hy < 0.3 {
+					return
+				}
+				sameStream := o.road == c.road && o.dir == c.dir
+				if !sameStream && (c.ghost > 0 || (c.inTurn && o.inTurn)) {
+					return // two cars from different approaches crossing: handled by give-way
+				}
+				ox, oy := o.x-c.x, o.y-c.y
+				along := ox*c.hx + oy*c.hy
+				lat := ox*-c.hy + oy*c.hx
+				lim := (c.width+o.width)/2 - 2
+				if motor && L-c.t < 1500 && o.road == c.road {
+					lim = 60
+				}
+				if along > 0 && math.Abs(lat) < lim && along-c.half-o.half < step+3 {
+					c.speed = 0
+				}
+			})
+		}
 		c.t += c.speed * dt
 		if !c.inTurn {
+			old := c.off
 			c.off += (g.laneTarget(c) - c.off) * math.Min(1, dt*3)
+			if c.speed > 5 {
+				c.offRate = math.Max(-0.5, math.Min(0.5, (c.off-old)/(c.speed*dt)))
+			} else {
+				c.offRate = 0
+			}
+		} else {
+			c.offRate = 0
 		}
 		if !c.inTurn && c.t >= L {
 			c.t -= L
@@ -1043,13 +1125,21 @@ func (g *Game) updateCars() {
 				c.inTurn = false
 				c.crashed, c.broken, c.pull = 0, 0, 0
 				L := g.carL(c)
-				for try := 0; try < 20; try++ {
+				ok := false
+				for try := 0; try < 20 && !ok; try++ {
 					c.t = 1000 + g.rng.Float64()*(L-2000)
 					c.off = g.laneTarget(c)
 					g.carPose(c)
-					if !g.visible(c.x, c.y, 400) {
-						break
+					ok = !g.visible(c.x, c.y, 400)
+					for _, o := range g.cars {
+						if o != c && math.Abs(o.x-c.x) < 250 && math.Abs(o.y-c.y) < 250 {
+							ok = false
+							break
+						}
 					}
+				}
+				if !ok {
+					g.respawnCar(c)
 				}
 				g.setNext(c)
 				c.speed = g.carLimit(c)
@@ -1287,12 +1377,47 @@ func (g *Game) drawLamps(screen *ebiten.Image, sx, sy, hx, hy, half, width float
 	}
 }
 
+// pathPoint returns where the car's path is d pixels ahead of (or behind, d<0) its current spot.
+func (g *Game) pathPoint(c *Car, d float64) (float64, float64) {
+	if c.chase {
+		return c.x + c.hx*d, c.y + c.hy*d
+	}
+	if c.inTurn {
+		u := (c.t + d) / c.turnLen
+		switch {
+		case u < 0:
+			ix, iy := 2*(c.p1x-c.p0x), 2*(c.p1y-c.p0y)
+			l := math.Max(math.Hypot(ix, iy), 0.001)
+			return c.p0x + ix/l*(c.t+d), c.p0y + iy/l*(c.t+d)
+		case u > 1:
+			ox, oy := 2*(c.p2x-c.p1x), 2*(c.p2y-c.p1y)
+			l := math.Max(math.Hypot(ox, oy), 0.001)
+			e := c.t + d - c.turnLen
+			return c.p2x + ox/l*e, c.p2y + oy/l*e
+		}
+		return bez(c, u)
+	}
+	L := g.carL(c)
+	t := math.Max(-40, math.Min(L+40, c.t+d))
+	x, y, _, _ := g.roadPose(c.road, c.dir, g.sOf(c, t), c.off)
+	return x, y
+}
+
 func (g *Game) drawCar(screen *ebiten.Image, c *Car, cx, cy float64) {
-	sx, sy := c.x-cx, c.y-cy
-	if sx < -100 || sy < -100 || sx > screenW+100 || sy > screenH+100 {
+	if c.x-cx < -100 || c.y-cy < -100 || c.x-cx > screenW+100 || c.y-cy > screenH+100 {
 		return
 	}
-	drawRot(screen, c.img, sx, sy, c.angle())
+	// body sits between its front and rear axles, so the nose swings into a corner first
+	fx, fy := g.pathPoint(c, c.half*0.55)
+	rx0, ry0 := g.pathPoint(c, -c.half*0.55)
+	ang := math.Atan2(fy-ry0, fx-rx0)
+	if math.Hypot(fx-rx0, fy-ry0) < 1 {
+		ang = c.angle()
+	}
+	ang -= math.Atan(c.offRate) // angle the car while it changes lane instead of sliding sideways
+	sx, sy := (fx+rx0)/2-cx, (fy+ry0)/2-cy
+	drawRot(screen, c.img, sx, sy, ang)
+	c.dhx, c.dhy = math.Cos(ang), math.Sin(ang)
 	ind := 0
 	switch {
 	case c.crashed > 0 || c.broken > 0 || c.hazard > 0:
@@ -1302,7 +1427,7 @@ func (g *Game) drawCar(screen *ebiten.Image, c *Car, cx, cy float64) {
 	case c.turnSign != 0 && !c.chase && (c.inTurn || c.t > g.carL(c)-200):
 		ind = c.turnSign
 	}
-	g.drawLamps(screen, sx, sy, c.hx, c.hy, c.half, c.width, ind, c.braking)
+	g.drawLamps(screen, sx, sy, c.dhx, c.dhy, c.half, c.width, ind, c.braking)
 	if c.isEV() || c.chase {
 		rx, ry := -c.hy, c.hx
 		ph := math.Mod(g.clock, 0.3) < 0.15

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"math"
 	"os"
 	"runtime/debug"
 	"time"
@@ -61,6 +62,20 @@ func (t *ct) Update() error {
 			t.maxU = d
 		}
 	}
+	if t.n == 95 || t.n == 110 {
+		k := 0
+		for _, p := range places {
+			if p.MW > 0 {
+				if (t.n == 95 && k == 0) || (t.n == 110 && k == 2) {
+					x, y := p.bayCenter()
+					shotX, shotY = x-screenW/2, y-screenH/2+120
+					shot = fmt.Sprintf("/tmp/ct/services%d.png", k)
+					t.truck.X, t.truck.Y = x+600, y+900
+				}
+				k++
+			}
+		}
+	}
 	if t.n >= 20 && t.n < 80 && t.n%15 == 5 {
 		// park the camera on a lights junction that has a minor road
 		k := 0
@@ -78,6 +93,51 @@ func (t *ct) Update() error {
 		}
 	}
 	if t.n == 600 {
+		// traffic soak: count vehicles overlapping and cars stuck for a long time
+		g := t.Game
+		overlaps, worstStill := 0, 0.0
+		still := map[*Car]float64{}
+		for i := 0; i < 6000; i++ {
+			g.clock += dt
+			g.updateCars()
+			g.updateIncidents()
+			if i%10 == 0 {
+				for a := 0; a < len(g.cars); a++ {
+					c := g.cars[a]
+					for b := a + 1; b < len(g.cars); b++ {
+						o := g.cars[b]
+						if math.Abs(o.x-c.x) > 120 || math.Abs(o.y-c.y) > 120 {
+							continue
+						}
+						along := (o.x-c.x)*c.hx + (o.y-c.y)*c.hy
+						lat := (o.x-c.x)*-c.hy + (o.y-c.y)*c.hx
+						if math.Abs(along) < (c.half+o.half)-6 && math.Abs(lat) < (c.width+o.width)/2-4 && c.crashed <= 0 && o.crashed <= 0 && !c.chase && !o.chase {
+							overlaps++
+							if overlaps <= 14 {
+								fmt.Printf("  overlap: kinds %d/%d inTurn %v/%v dot=%.2f ghost %.1f/%.1f speed %.0f/%.0f roads %d/%d motor=%v pull %.1f/%.1f along=%.0f lat=%.0f\n", c.kind, o.kind, c.inTurn, o.inTurn, c.hx*o.hx+c.hy*o.hy, c.ghost, o.ghost, c.speed, o.speed, c.road, o.road, g.isMotor(c.road), c.pull, o.pull, along, lat)
+							}
+						}
+					}
+				}
+			}
+			for _, c := range g.cars {
+				if c.speed < 1 && c.crashed <= 0 && c.broken <= 0 {
+					still[c] += dt
+				} else {
+					still[c] = 0
+				}
+				worstStill = math.Max(worstStill, still[c])
+			}
+		}
+		stuck := 0
+		for c, v := range still {
+			if v > 40 {
+				stuck++
+				n := g.nodes[c.to]
+				fmt.Printf("  STUCK kind=%d inTurn=%v t=%.0f L=%.0f ctrl=%d roads@node=%d cleared=%v yielded=%v turn=%d motor=%v exitBlocked=%v nroad=%d\n", c.kind, c.inTurn, c.t, g.carL(c), n.Ctrl, len(n.Roads), c.cleared, c.yielded, c.turnSign, g.isMotor(c.road), g.exitBlocked(c), c.nroad)
+			}
+		}
+		fmt.Printf("soak 100s: overlap-samples=%d  stuck>40s=%d  worst wait=%.0fs\n", overlaps, stuck, worstStill)
 		fmt.Printf("600 frames OK. update avg %.2fms max %.1fms | draw max %.1fms\n", float64(t.sumU.Microseconds())/595/1000, float64(t.maxU.Microseconds())/1000, float64(t.maxD.Microseconds())/1000)
 		return ebiten.Termination
 	}
@@ -97,7 +157,7 @@ func (t *ct) Draw(s *ebiten.Image) {
 		t.camX, t.camY = shotX, shotY
 	}
 	t.Game.Draw(s)
-	if shot != "" && t.n%15 == 6 {
+	if shot != "" {
 		b := s.Bounds()
 		px := make([]byte, 4*b.Dx()*b.Dy())
 		s.ReadPixels(px)

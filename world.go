@@ -250,6 +250,27 @@ func (p *Place) bay() (x, y, w, h float64) {
 	return ox + 1.5*tile, oy + 2.2*tile, 3 * tile, 2 * tile
 }
 
+type PumpLane struct {
+	X, Y, W, H float64
+	Electric   bool
+}
+
+// lanes splits a fuel / charging bay into two lanes either side of a pump island:
+// diesel pumps, EV chargers, or one of each at stations that have both.
+func (p *Place) lanes() []PumpLane {
+	x, y, w, h := p.bay()
+	e1, e2 := p.Fuel == 0, p.Fuel == 0
+	if p.Fuel > 0 && p.Charge > 0 {
+		e2 = true
+	}
+	if w >= h {
+		hh := (h - 14) / 2
+		return []PumpLane{{x, y, w, hh, e1}, {x, y + hh + 14, w, hh, e2}}
+	}
+	ww := (w - 14) / 2
+	return []PumpLane{{x, y, ww, h, e1}, {x + ww + 14, y, ww, h, e2}}
+}
+
 func (p *Place) bayCenter() (float64, float64) {
 	x, y, w, h := p.bay()
 	return x + w/2, y + h/2
@@ -706,6 +727,7 @@ func (g *Game) generate() {
 	g.setupJunctions(r)
 	g.classifyTiles(r)
 	g.placeYards(r)
+	g.buildSlips()
 	g.fillLots(r)
 
 	// speed cameras on straight-ish town roads
@@ -1026,43 +1048,45 @@ func (g *Game) placeYards(r *rand.Rand) {
 					g.tiles[xx][yy] = TYardBuilding
 				}
 			}
-			// driveway from the yard to the road
-			dxs, dys := []int{}, []int{}
-			switch face {
-			case 0:
-				for yy := tty - 1; yy >= tty-5 && yy >= 0 && g.tileEdge[ttx][yy] >= -8; yy-- {
-					dys = append(dys, yy)
-				}
-				for xx := ttx + 1; xx < ttx+5; xx++ {
-					for _, yy := range dys {
-						g.drive(xx, yy, pi)
+			if p.MW == 0 { // motorway services get proper slip roads instead (buildSlips)
+				// driveway from the yard to the road
+				dxs, dys := []int{}, []int{}
+				switch face {
+				case 0:
+					for yy := tty - 1; yy >= tty-5 && yy >= 0 && g.tileEdge[ttx][yy] >= -8; yy-- {
+						dys = append(dys, yy)
 					}
-				}
-			case 2:
-				for yy := tty + 6; yy <= tty+10 && yy < mapH && g.tileEdge[ttx][yy] >= -8; yy++ {
-					dys = append(dys, yy)
-				}
-				for xx := ttx + 1; xx < ttx+5; xx++ {
-					for _, yy := range dys {
-						g.drive(xx, yy, pi)
+					for xx := ttx + 1; xx < ttx+5; xx++ {
+						for _, yy := range dys {
+							g.drive(xx, yy, pi)
+						}
 					}
-				}
-			case 3:
-				for xx := ttx - 1; xx >= ttx-5 && xx >= 0 && g.tileEdge[xx][tty] >= -8; xx-- {
-					dxs = append(dxs, xx)
-				}
-				for yy := tty + 1; yy < tty+5; yy++ {
-					for _, xx := range dxs {
-						g.drive(xx, yy, pi)
+				case 2:
+					for yy := tty + 6; yy <= tty+10 && yy < mapH && g.tileEdge[ttx][yy] >= -8; yy++ {
+						dys = append(dys, yy)
 					}
-				}
-			case 1:
-				for xx := ttx + 6; xx <= ttx+10 && xx < mapW && g.tileEdge[xx][tty] >= -8; xx++ {
-					dxs = append(dxs, xx)
-				}
-				for yy := tty + 1; yy < tty+5; yy++ {
-					for _, xx := range dxs {
-						g.drive(xx, yy, pi)
+					for xx := ttx + 1; xx < ttx+5; xx++ {
+						for _, yy := range dys {
+							g.drive(xx, yy, pi)
+						}
+					}
+				case 3:
+					for xx := ttx - 1; xx >= ttx-5 && xx >= 0 && g.tileEdge[xx][tty] >= -8; xx-- {
+						dxs = append(dxs, xx)
+					}
+					for yy := tty + 1; yy < tty+5; yy++ {
+						for _, xx := range dxs {
+							g.drive(xx, yy, pi)
+						}
+					}
+				case 1:
+					for xx := ttx + 6; xx <= ttx+10 && xx < mapW && g.tileEdge[xx][tty] >= -8; xx++ {
+						dxs = append(dxs, xx)
+					}
+					for yy := tty + 1; yy < tty+5; yy++ {
+						for _, xx := range dxs {
+							g.drive(xx, yy, pi)
+						}
 					}
 				}
 			}
@@ -1070,6 +1094,93 @@ func (g *Game) placeYards(r *rand.Rand) {
 		}
 		if !placed {
 			panic("could not place " + p.Name)
+		}
+	}
+}
+
+// buildSlips gives each motorway services an off-slip from the hard shoulder before it
+// and an on-slip back onto the motorway after it, like real services.
+func (g *Game) buildSlips() {
+	g.slips = nil
+	for pi, p := range places {
+		if p.MW == 0 {
+			continue
+		}
+		mr := g.roads[g.motorways[p.MW-1]]
+		side := p.Side
+		ox, oy, _, _ := p.rect()
+		// near edge of the yard (facing the motorway) and the inward direction
+		var ex0, ey0, ex1, ey1, inx, iny float64
+		switch p.Face {
+		case 0:
+			ex0, ey0, ex1, ey1, inx, iny = ox+56, oy, ox+6*tile-56, oy, 0, 1
+		case 2:
+			ex0, ey0, ex1, ey1, inx, iny = ox+56, oy+6*tile, ox+6*tile-56, oy+6*tile, 0, -1
+		case 1:
+			ex0, ey0, ex1, ey1, inx, iny = ox+6*tile, oy+56, ox+6*tile, oy+6*tile-56, -1, 0
+		default:
+			ex0, ey0, ex1, ey1, inx, iny = ox, oy+56, ox, oy+6*tile-56, 1, 0
+		}
+		lat := side * (mwHalf - 26)
+		up, dn := p.ServS-1100*side, p.ServS+1100*side
+		ux, uy, utx, uty := mr.at(up)
+		dx, dy, dtx, dty := mr.at(dn)
+		ux, uy = ux+uty*lat, uy-utx*lat
+		dx, dy = dx+dty*lat, dy-dtx*lat
+		// travel direction along the carriageway
+		utx, uty, dtx, dty = utx*side, uty*side, dtx*side, dty*side
+		// entry = yard edge end nearest the upstream point
+		if math.Hypot(ex1-ux, ey1-uy) < math.Hypot(ex0-ux, ey0-uy) {
+			ex0, ey0, ex1, ey1 = ex1, ey1, ex0, ey0
+		}
+		mk := func(p0, p1, p2, p3 [2]float64) *Road {
+			var pts [][2]float64
+			for i := 0; i <= 40; i++ {
+				u := float64(i) / 40
+				a, b, c, d := (1-u)*(1-u)*(1-u), 3*(1-u)*(1-u)*u, 3*(1-u)*u*u, u*u*u
+				pts = append(pts, [2]float64{a*p0[0] + b*p1[0] + c*p2[0] + d*p3[0], a*p0[1] + b*p1[1] + c*p2[1] + d*p3[1]})
+			}
+			r := &Road{P: pts, Class: clLink, Name: p.Name + " slip road", City: -1}
+			r.build()
+			return r
+		}
+		off := mk([2]float64{ux, uy}, [2]float64{ux + utx*500, uy + uty*500},
+			[2]float64{ex0 - inx*260, ey0 - iny*260}, [2]float64{ex0 + inx*40, ey0 + iny*40})
+		on := mk([2]float64{ex1 + inx*40, ey1 + iny*40}, [2]float64{ex1 - inx*260, ey1 - iny*260},
+			[2]float64{dx - dtx*500, dy - dty*500}, [2]float64{dx, dy})
+		g.slips = append(g.slips, off, on)
+		for _, sl := range []*Road{off, on} {
+			for s := 0.0; s <= sl.Len; s += 16 {
+				x, y, _, _ := sl.at(s)
+				for xx := int((x - 44) / tile); xx <= int((x+44)/tile); xx++ {
+					for yy := int((y - 44) / tile); yy <= int((y+44)/tile); yy++ {
+						if xx < 0 || yy < 0 || xx >= mapW || yy >= mapH || g.tiles[xx][yy] == TRoad || g.yardOf[xx][yy] == int16(pi+1) && g.tiles[xx][yy] != TGrass {
+							continue
+						}
+						cx, cy := float64(xx*tile+32), float64(yy*tile+32)
+						if math.Hypot(cx-x, cy-y) < 70 {
+							g.tiles[xx][yy] = TYard
+							g.yardOf[xx][yy] = int16(pi + 1)
+							g.slipTile[xx][yy] = true
+						}
+					}
+				}
+			}
+		}
+		// fence off the verge between the motorway and the services so you have to use the slips
+		x0, y0 := p.TX-4, p.TY-4
+		for xx := x0; xx < p.TX+10; xx++ {
+			for yy := y0; yy < p.TY+10; yy++ {
+				if xx < 0 || yy < 0 || xx >= mapW || yy >= mapH || g.slipTile[xx][yy] {
+					continue
+				}
+				if g.yardOf[xx][yy] == int16(pi+1) && xx >= p.TX && xx < p.TX+6 && yy >= p.TY && yy < p.TY+6 {
+					continue
+				}
+				if (g.tiles[xx][yy] == TGrass || g.tiles[xx][yy] == TField) && g.tileEdge[xx][yy] > 10 && g.tileEdge[xx][yy] < 260 {
+					g.tiles[xx][yy] = THedge
+				}
+			}
 		}
 	}
 }
@@ -1538,6 +1649,20 @@ func (g *Game) drawChunk(img *ebiten.Image, ox, oy float64) {
 		}
 		C(n.X, n.Y, r, asphalt)
 	}
+	// services slip roads
+	for _, sl := range g.slips {
+		if sl.x1+200 < ox || sl.y1+200 < oy || sl.x0-200 > ox+chunkSz || sl.y0-200 > oy+chunkSz {
+			continue
+		}
+		g.band(img, sl, 0, sl.Len, -46, 46, rgb(80, 130, 60), ox, oy, nil)
+		g.band(img, sl, 0, sl.Len, -40, 40, asphalt, ox, oy, nil)
+		g.band(img, sl, 30, sl.Len-30, 32, 36, white, ox, oy, nil)
+		g.band(img, sl, 30, sl.Len-30, -36, -32, white, ox, oy, nil)
+		for s := sl.Len * 0.3; s < sl.Len*0.8; s += sl.Len * 0.25 {
+			x, y, tx, ty := sl.at(s)
+			fillTri(img, x+tx*14-ox, y+ty*14-oy, x-tx*8+ty*9-ox, y-ty*8-tx*9-oy, x-tx*8-ty*9-ox, y-ty*8+tx*9-oy, white)
+		}
+	}
 	// markings
 	for _, ri := range vis {
 		rd := g.roads[ri]
@@ -1759,26 +1884,65 @@ func (g *Game) drawChunk(img *ebiten.Image, ox, oy float64) {
 		case p.Charge > 0:
 			label = "CHARGERS"
 		}
-		for i := 0.0; i < w; i += 24 {
-			R(x+i, y, 12, 4, c)
-			R(x+i, y+h-4, 12, 4, c)
-		}
-		for i := 0.0; i < h; i += 24 {
-			R(x, y+i, 4, 12, c)
-			R(x+w-4, y+i, 4, 12, c)
-		}
 		if p.Fuel > 0 || p.Charge > 0 {
-			for k := 0; k < 3; k++ {
-				col := p.Color
-				if p.Charge > 0 && (p.Fuel == 0 || k == 2) {
-					col = rgb(0, 200, 180)
+			// canopy shadow, then pump lanes either side of an island
+			R(x-14, y-14, w+28, h+28, color.NRGBA{0, 0, 0, 35})
+			ls := p.lanes()
+			for li, ln := range ls {
+				lc := rgb(240, 200, 40)
+				name := "DIESEL"
+				if ln.Electric {
+					lc, name = rgb(0, 210, 190), "EV CHARGING"
 				}
-				px, py := x+w/2+float64(k-1)*40, y+h/2+24
-				R(px-7, py-6, 14, 12, rgb(40, 40, 40))
-				R(px-5, py-4, 10, 8, col)
+				for i := 0.0; i < ln.W; i += 20 {
+					R(ln.X+i, ln.Y, 10, 3, lc)
+					R(ln.X+i, ln.Y+ln.H-3, 10, 3, lc)
+				}
+				for i := 0.0; i < ln.H; i += 20 {
+					R(ln.X, ln.Y+i, 3, 10, lc)
+					R(ln.X+ln.W-3, ln.Y+i, 3, 10, lc)
+				}
+				T(name, faceSign, ln.X+ln.W/2, ln.Y+ln.H/2-8, color.NRGBA{255, 255, 255, 150})
+				_ = li
 			}
+			// island between the lanes with pumps / chargers on it
+			a, b := ls[0], ls[1]
+			if a.W >= a.H {
+				iy := a.Y + a.H
+				R(a.X+10, iy+2, a.W-20, 10, rgb(190, 190, 185))
+				for k := 0; k < 3; k++ {
+					px := a.X + a.W*float64(k+1)/4
+					col := rgb(40, 40, 40)
+					if a.Electric || (k == 2 && b.Electric) {
+						col = rgb(0, 150, 140)
+					}
+					R(px-8, iy-1, 16, 16, col)
+					R(px-5, iy+2, 10, 5, rgb(120, 220, 120))
+				}
+			} else {
+				ix := a.X + a.W
+				R(ix+2, a.Y+10, 10, a.H-20, rgb(190, 190, 185))
+				for k := 0; k < 3; k++ {
+					py := a.Y + a.H*float64(k+1)/4
+					col := rgb(40, 40, 40)
+					if a.Electric || (k == 2 && b.Electric) {
+						col = rgb(0, 150, 140)
+					}
+					R(ix-1, py-8, 16, 16, col)
+					R(ix+2, py-5, 5, 10, rgb(120, 220, 120))
+				}
+			}
+		} else {
+			for i := 0.0; i < w; i += 24 {
+				R(x+i, y, 12, 4, c)
+				R(x+i, y+h-4, 12, 4, c)
+			}
+			for i := 0.0; i < h; i += 24 {
+				R(x, y+i, 4, 12, c)
+				R(x+w-4, y+i, 4, 12, c)
+			}
+			T(label, faceSmall, x+w/2, y+h/2-10, color.NRGBA{255, 255, 255, 110})
 		}
-		T(label, faceSmall, x+w/2, y+h/2-10, color.NRGBA{255, 255, 255, 110})
 	}
 	// motorway signs (blue boards on the left of each carriageway)
 	sign := func(x, y float64, l1, l2 string) {

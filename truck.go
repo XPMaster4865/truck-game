@@ -651,29 +651,32 @@ func (g *Game) updateJobs() {
 	g.fuelling = false
 	g.wrongPump = ""
 	for _, fs := range stations {
-		if !g.inBay(fs.p) || !stopped {
-			continue
-		}
 		m := g.model()
-		price, rate := fs.p.Fuel, 25.0
-		if m.Electric {
-			price, rate = fs.p.Charge, m.Tank/120 // 0-100% in two minutes
-		}
-		if price <= 0 {
-			if m.Electric {
-				g.wrongPump = "No chargers here - electric trucks need a charging point (GridSwerve, Ionnity, services)"
-			} else {
-				g.wrongPump = "This is a charging hub - diesel trucks need a fuel station"
+		for _, ln := range fs.p.lanes() {
+			t := g.truck
+			if t.X < ln.X || t.X > ln.X+ln.W || t.Y < ln.Y || t.Y > ln.Y+ln.H || !stopped {
+				continue
 			}
-			continue
-		}
-		if g.fuel[g.cur] < m.Tank-0.01 && g.money > 0 {
-			add := math.Min(rate*dt, m.Tank-g.fuel[g.cur])
-			g.fuel[g.cur] += add
-			g.fuelBill += add * price
-			g.fuelling = true
-			g.money -= int(g.fuelBill)
-			g.fuelBill -= float64(int(g.fuelBill))
+			if ln.Electric != m.Electric {
+				if m.Electric {
+					g.wrongPump = "That's a diesel pump - park in an EV CHARGING bay"
+				} else {
+					g.wrongPump = "That's an EV charger - park at a DIESEL pump"
+				}
+				continue
+			}
+			price, rate := fs.p.Fuel, 25.0
+			if m.Electric {
+				price, rate = fs.p.Charge, m.Tank/120 // 0-100% in two minutes
+			}
+			if g.fuel[g.cur] < m.Tank-0.01 && g.money > 0 {
+				add := math.Min(rate*dt, m.Tank-g.fuel[g.cur])
+				g.fuel[g.cur] += add
+				g.fuelBill += add * price
+				g.fuelling = true
+				g.money -= int(g.fuelBill)
+				g.fuelBill -= float64(int(g.fuelBill))
+			}
 		}
 	}
 
