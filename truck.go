@@ -188,16 +188,19 @@ func (g *Game) updateTruck() {
 	left := pressed(ebiten.KeyA, ebiten.KeyArrowLeft)
 	right := pressed(ebiten.KeyD, ebiten.KeyArrowRight)
 	hand := pressed(ebiten.KeySpace)
-	if inpututil.IsKeyJustPressed(ebiten.KeyQ) {
+	if g.typing { // typing a chat message: hands off the wheel
+		up, down, left, right, hand = false, false, false, false, false
+	}
+	if !g.typing && inpututil.IsKeyJustPressed(ebiten.KeyQ) {
 		g.setIndicator(-1)
 	}
-	if inpututil.IsKeyJustPressed(ebiten.KeyE) {
+	if !g.typing && inpututil.IsKeyJustPressed(ebiten.KeyE) {
 		g.setIndicator(1)
 	}
-	if inpututil.IsKeyJustPressed(ebiten.KeyX) {
+	if !g.typing && inpututil.IsKeyJustPressed(ebiten.KeyX) {
 		g.setIndicator(2)
 	}
-	g.hornOn = pressed(ebiten.KeyH)
+	g.hornOn = pressed(ebiten.KeyH) && !g.typing
 	if g.ind == -1 || g.ind == 1 {
 		turned := math.Abs(math.Remainder(t.Angle-g.indAngle, 2*math.Pi))
 		if turned > 0.9 && !left && !right {

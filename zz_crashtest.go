@@ -44,6 +44,10 @@ func (t *ct) Update() error {
 			t.reset()
 		}
 		t.state = stPlay
+		if srv := os.Getenv("ONLINE"); srv != "" {
+			t.net = startNet(srv, os.Getenv("PNAME"), t.cabColor(t.cur), t.cur)
+			t.truck.X += float64(len(os.Getenv("PNAME"))) * 40
+		}
 		fmt.Printf("enter handled in %.2fs, cars=%d\n", time.Since(t0).Seconds(), len(t.cars))
 	}
 	if t.n > 3 && t.n%50 == 0 { // drive somewhere new so map sections get built
@@ -91,6 +95,21 @@ func (t *ct) Update() error {
 				k++
 			}
 		}
+	}
+	if t.net != nil && t.n == 150 {
+		t.net.sendMsg(netMsg{T: "chat", Msg: "hello from " + os.Getenv("PNAME")})
+	}
+	if t.net != nil && t.n == 500 {
+		t.net.mu.Lock()
+		fmt.Printf("[%s] status=%q online=%v others=%d\n", os.Getenv("PNAME"), t.net.status, t.net.online, len(t.net.players))
+		for _, r := range t.net.players {
+			fmt.Printf("[%s]   sees %s at %.0f,%.0f\n", os.Getenv("PNAME"), r.Name, r.X, r.Y)
+		}
+		for _, c := range t.net.chat {
+			fmt.Printf("[%s]   chat %s: %s\n", os.Getenv("PNAME"), c.from, c.msg)
+		}
+		t.net.mu.Unlock()
+		return ebiten.Termination
 	}
 	if t.n == 600 {
 		// traffic soak: count vehicles overlapping and cars stuck for a long time

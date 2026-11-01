@@ -26,61 +26,69 @@ const (
 	stShop
 	stMap
 	stJobMaker
+	stOnline
 )
 
 type Game struct {
-	state         int
-	tiles         [mapW][mapH]TileKind
-	tileEdge      [mapW][mapH]float32
-	yardOf        [mapW][mapH]int16
-	nodes         []Node
-	roads         []*Road
-	motorways     []int
-	slips         []*Road
-	slipTile      [mapW][mapH]bool
-	mwDest        map[int][2]string
-	segIdx        map[int][]segRef
-	hornOn        bool
-	aiHonk        float64
-	aiHonkVol     float64
-	gpsOn         bool
-	gpsX, gpsY    float64
-	route         [][2]float64
-	routeSteps    []routeStep
-	routeLen      float64
-	routeTimer    float64
-	routeDirty    bool
-	gpsText       string
-	gpsTurn       int
-	mapOX, mapOY  float64
-	mapPanY       float64
-	carGrid       map[int][]*Car
-	carsTo        map[int][]*Car
-	carsRoad      map[int][]*Car
-	jmCol         int
-	jmFrom, jmTo  int
-	jmCargo       int
-	jmMsg         string
-	buildings     []Rect
-	cameras       []*Camera
-	chunkCache    map[[2]int]*ebiten.Image
-	chunkUsed     map[[2]int]int64
-	frameNo       int64
-	nextBreakdown float64
-	town          string
-	ind           int
-	indAngle      float64
-	wrongPump     string
-	hasSave       bool
-	saveTimer     float64
-	mapPan        float64
-	sound         *Sound
-	noSave        bool
-	motorCheck    float64
-	bigMap        *ebiten.Image
-	bms           float64
-	mini          *ebiten.Image
-	truckImgs     map[[3]int]*ebiten.Image
+	state            int
+	tiles            [mapW][mapH]TileKind
+	tileEdge         [mapW][mapH]float32
+	yardOf           [mapW][mapH]int16
+	nodes            []Node
+	roads            []*Road
+	motorways        []int
+	slips            []*Road
+	slipTile         [mapW][mapH]bool
+	mwDest           map[int][2]string
+	segIdx           map[int][]segRef
+	hornOn           bool
+	aiHonk           float64
+	aiHonkVol        float64
+	gpsOn            bool
+	gpsX, gpsY       float64
+	route            [][2]float64
+	routeSteps       []routeStep
+	routeLen         float64
+	routeTimer       float64
+	routeDirty       bool
+	gpsText          string
+	gpsTurn          int
+	mapOX, mapOY     float64
+	mapPanY          float64
+	carGrid          map[int][]*Car
+	carsTo           map[int][]*Car
+	carsRoad         map[int][]*Car
+	jmCol            int
+	jmFrom, jmTo     int
+	jmCargo          int
+	jmMsg            string
+	buildings        []Rect
+	cameras          []*Camera
+	chunkCache       map[[2]int]*ebiten.Image
+	chunkUsed        map[[2]int]int64
+	frameNo          int64
+	nextBreakdown    float64
+	town             string
+	ind              int
+	indAngle         float64
+	wrongPump        string
+	hasSave          bool
+	saveTimer        float64
+	mapPan           float64
+	sound            *Sound
+	noSave           bool
+	motorCheck       float64
+	net              *Net
+	netTick          int
+	typing           bool
+	chatBuf          string
+	olServer, olName string
+	olField          int
+	olMsg            string
+	bigMap           *ebiten.Image
+	bms              float64
+	mini             *ebiten.Image
+	truckImgs        map[[3]int]*ebiten.Image
 
 	truck              Truck
 	prevX, prevY       float64
@@ -304,7 +312,13 @@ func (g *Game) Update() error {
 	}
 	g.frameNo++
 	g.prefetchChunk()
-	if inpututil.IsKeyJustPressed(ebiten.KeyF) || inpututil.IsKeyJustPressed(ebiten.KeyF11) {
+	g.netUpdate()
+	if g.state == stOnline {
+		g.clock += dt
+		g.updateOnlineMenu()
+		return nil
+	}
+	if !g.typing && (inpututil.IsKeyJustPressed(ebiten.KeyF) || inpututil.IsKeyJustPressed(ebiten.KeyF11)) {
 		ebiten.SetFullscreen(!ebiten.IsFullscreen())
 	}
 	switch g.state {
@@ -328,6 +342,9 @@ func (g *Game) Update() error {
 			g.reset()
 			g.save()
 			g.state = stPlay
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyO) {
+			g.openOnlineMenu()
 		}
 		g.updateSound()
 		return nil
@@ -383,26 +400,32 @@ func (g *Game) Update() error {
 		}
 		return nil
 	}
-	if inpututil.IsKeyJustPressed(ebiten.KeyP) || inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
+	if g.typing {
+		g.updateChatInput()
+	} else if g.net != nil && g.net.online && inpututil.IsKeyJustPressed(ebiten.KeyT) {
+		g.typing, g.chatBuf = true, ""
+		ebiten.AppendInputChars(nil)
+	}
+	if !g.typing && (inpututil.IsKeyJustPressed(ebiten.KeyP) || inpututil.IsKeyJustPressed(ebiten.KeyEscape)) {
 		g.state = stPause
 		return nil
 	}
-	if inpututil.IsKeyJustPressed(ebiten.KeyM) {
+	if !g.typing && inpututil.IsKeyJustPressed(ebiten.KeyM) {
 		g.state = stMap
 		g.mapPan, g.mapPanY = 0, 0
 		return nil
 	}
-	if inpututil.IsKeyJustPressed(ebiten.KeyJ) && g.phase == 0 {
+	if !g.typing && inpututil.IsKeyJustPressed(ebiten.KeyJ) && g.phase == 0 {
 		g.state = stJobMaker
 		g.jmMsg = ""
 		return nil
 	}
-	if inpututil.IsKeyJustPressed(ebiten.KeyG) && g.gpsOn {
+	if !g.typing && inpututil.IsKeyJustPressed(ebiten.KeyG) && g.gpsOn {
 		g.gpsOn = false
 		g.routeDirty = true
 		g.flash("Sat-nav pin cleared.")
 	}
-	if g.fuel[g.cur] <= 0 && inpututil.IsKeyJustPressed(ebiten.KeyR) {
+	if !g.typing && g.fuel[g.cur] <= 0 && inpututil.IsKeyJustPressed(ebiten.KeyR) {
 		g.money -= 150
 		g.fuel[g.cur] = models[g.cur].Tank * 0.25
 		g.flash("Recovery truck topped you up (25%). -£150")
@@ -412,10 +435,11 @@ func (g *Game) Update() error {
 		g.hitCool -= dt
 	}
 	g.updateTruck()
+	g.remoteBump()
 	g.updateCars()
 	g.updateIncidents()
 	g.updateLaw()
-	if g.state == stPlay {
+	if g.state == stPlay && !g.typing {
 		g.updateJobs()
 	}
 	g.updateGPS()
@@ -477,8 +501,13 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	for _, c := range g.cars {
 		g.drawCar(screen, c, cx, cy)
 	}
+	g.drawRemotes(screen, cx, cy)
 	g.drawLights(screen, cx, cy)
 
+	if g.state == stOnline {
+		g.drawOnlineMenu(screen)
+		return
+	}
 	if g.state == stTitle {
 		g.drawTitle(screen)
 		return
@@ -558,7 +587,7 @@ func (g *Game) drawTitle(screen *ebiten.Image) {
 			drawTextShadow(screen, "Press ENTER to start", faceBig, screenW/2, 570, color.White, text.AlignCenter)
 		}
 	}
-	drawText(screen, "London  ->  M11  ->  Cambridge", faceMed, screenW/2, 630, rgb(150, 190, 255), text.AlignCenter)
+	drawText(screen, "O = PLAY ONLINE with friends", faceMed, screenW/2, 625, rgb(120, 240, 120), text.AlignCenter)
 }
 
 // ---------- HUD ----------
@@ -721,6 +750,7 @@ func (g *Game) drawHUD(screen *ebiten.Image) {
 		drawText(screen, g.gpsText, faceSmall, gx+72, gy+26, white, text.AlignStart)
 	}
 	g.drawJunctionAhead(screen)
+	g.drawNetHUD(screen)
 	g.drawDash(screen)
 	g.drawMinimap(screen)
 }
@@ -928,6 +958,7 @@ func (g *Game) drawMinimap(screen *ebiten.Image) {
 	g.mini.DrawImage(g.bigMap, op)
 	g.drawRouteMap(g.mini, ox, oy, s)
 	g.mapMarkers(g.mini, ox, oy, s, false)
+	g.drawRemotesOnMap(g.mini, ox, oy, s, false)
 	// target arrow at edge if off minimap
 	if p := g.target(); p != nil {
 		x, y := p.bayCenter()
@@ -986,6 +1017,7 @@ func (g *Game) drawBigMap(screen *ebiten.Image) {
 	}
 	g.drawRouteMap(view, ox, oy, s)
 	g.mapMarkers(view, ox, oy, s, true)
+	g.drawRemotesOnMap(view, ox, oy, s, true)
 	cxp, cyp := ebiten.CursorPosition()
 	wx, wy := (float64(cxp)-ox)/s, (float64(cyp)-oy)/s
 	if hh := g.roadQuery(wx, wy, 300); hh.Road >= 0 && hh.Edge < 60 {
