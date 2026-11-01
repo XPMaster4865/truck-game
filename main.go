@@ -590,6 +590,7 @@ func (g *Game) drawTitle(screen *ebiten.Image) {
 		}
 	}
 	drawText(screen, "O = PLAY ONLINE with friends", faceMed, screenW/2, 625, rgb(120, 240, 120), text.AlignCenter)
+	drawText(screen, gameVersion, faceMed, screenW-20, screenH-36, color.RGBA{200, 200, 200, 255}, text.AlignEnd)
 }
 
 // ---------- HUD ----------
@@ -1205,6 +1206,9 @@ func main() {
 		log.Fatal(err)
 	}
 }
+
+// gameVersion is shown on the title screen and checked between online players.
+const gameVersion = "v5.3"
 
 // smoothShapes turns on anti-aliasing; it's expensive, so only the HUD dials use it.
 var smoothShapes = false

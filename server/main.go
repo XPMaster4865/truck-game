@@ -32,6 +32,7 @@ type Player struct {
 	Ind   int     `json:"ind"`
 	Cargo int     `json:"cargo"` // -1 = empty trailer, else index of the cargo's colour
 	Horn  bool    `json:"horn"`
+	Ver   string  `json:"ver"`
 }
 
 type msg struct {
@@ -161,16 +162,16 @@ func (h *hub) serve(w http.ResponseWriter, r *http.Request) {
 			if c.p.Name == "" {
 				c.p.Name = fmt.Sprintf("Driver %d", c.p.ID)
 			}
-			c.p.Color, c.p.Model = m.Color, m.Model
+			c.p.Color, c.p.Model, c.p.Ver = m.Color, m.Model, clean(m.Ver, 12)
 			name := c.p.Name
 			h.mu.Unlock()
 			b, _ := json.Marshal(msg{T: "chat", From: "Server", Msg: name + " joined the game"})
 			h.broadcast(b)
 		case "pos":
 			h.mu.Lock()
-			id, name := c.p.ID, c.p.Name
+			id, name, ver := c.p.ID, c.p.Name, c.p.Ver
 			c.p = m.Player
-			c.p.ID, c.p.Name = id, name
+			c.p.ID, c.p.Name, c.p.Ver = id, name, ver
 			h.mu.Unlock()
 		case "chat":
 			h.mu.Lock()

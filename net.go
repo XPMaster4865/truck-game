@@ -32,6 +32,7 @@ type netPlayer struct {
 	Ind   int     `json:"ind"`
 	Cargo int     `json:"cargo"`
 	Horn  bool    `json:"horn"`
+	Ver   string  `json:"ver"`
 }
 
 type netMsg struct {
@@ -156,7 +157,7 @@ func shortErr(err error) string {
 func (n *Net) session(ctx context.Context, conn *websocket.Conn, col color.RGBA, model int) {
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	hello, _ := json.Marshal(netMsg{T: "hello", netPlayer: netPlayer{Name: n.name, Color: [3]int{int(col.R), int(col.G), int(col.B)}, Model: model}})
+	hello, _ := json.Marshal(netMsg{T: "hello", netPlayer: netPlayer{Name: n.name, Ver: gameVersion, Color: [3]int{int(col.R), int(col.G), int(col.B)}, Model: model}})
 	if conn.Write(sctx, websocket.MessageText, hello) != nil {
 		return
 	}
@@ -205,6 +206,9 @@ func (n *Net) session(ctx context.Context, conn *websocket.Conn, col color.RGBA,
 				if r == nil {
 					r = &Remote{}
 					n.players[p.ID] = r
+					if p.Ver != "" && p.Ver != gameVersion {
+						n.addChat("Server", fmt.Sprintf("Warning: %s is on %s, you're on %s - the roads won't match. Both get the latest TruckHaul.exe!", p.Name, p.Ver, gameVersion))
+					}
 				}
 				r.netPlayer = *p
 			}
@@ -511,6 +515,7 @@ func (g *Game) updateOnlineMenu() {
 func (g *Game) drawOnlineMenu(screen *ebiten.Image) {
 	fillRect(screen, 0, 0, screenW, screenH, color.RGBA{0, 0, 0, 225})
 	drawTextShadow(screen, "PLAY ONLINE", faceTitle, screenW/2, 60, rgb(255, 210, 60), text.AlignCenter)
+	drawText(screen, "Everyone must be on the same version ("+gameVersion+")", faceSmall, screenW/2, 215, rgb(255, 200, 120), text.AlignCenter)
 	drawText(screen, "Drive in the same world as your friends. Everyone uses the same server address.", faceMed, screenW/2, 180, color.White, text.AlignCenter)
 	box := func(label, val string, y float64, active bool) {
 		drawText(screen, label, faceMed, 240, y, rgb(200, 200, 210), text.AlignStart)
