@@ -194,9 +194,10 @@ func (g *Game) updateTruck() {
 	if inpututil.IsKeyJustPressed(ebiten.KeyE) {
 		g.setIndicator(1)
 	}
-	if inpututil.IsKeyJustPressed(ebiten.KeyH) {
+	if inpututil.IsKeyJustPressed(ebiten.KeyX) {
 		g.setIndicator(2)
 	}
+	g.hornOn = pressed(ebiten.KeyH)
 	if g.ind == -1 || g.ind == 1 {
 		turned := math.Abs(math.Remainder(t.Angle-g.indAngle, 2*math.Pi))
 		if turned > 0.9 && !left && !right {
@@ -208,7 +209,7 @@ func (g *Game) updateTruck() {
 	}
 
 	maxF := m.MaxSpeed
-	if k, _ := g.tileAt(t.X, t.Y); k == TGrass {
+	if k, _ := g.tileAt(t.X, t.Y); (k == TGrass || k == TField) && g.roadQuery(t.X, t.Y, 200).Edge > 0 {
 		maxF = 150
 	}
 	switch {
@@ -302,7 +303,7 @@ func (g *Game) updateTruck() {
 			t.Speed = -t.Speed * 0.3
 			if impact > 70 && c.crashed <= 0 && !c.isEV() {
 				c.crashed = 15
-				if !g.offence("careless", "Careless driving (collision)", 200, 3, true) {
+				if !g.offence("careless", "Careless driving (collision)", 200, true) {
 					g.flash("You hit a car! Drive carefully...")
 				}
 			}
@@ -334,37 +335,12 @@ func (g *Game) updateTruck() {
 
 // ---------- law & order ----------
 
-type Offence struct {
-	t   float64
-	pts int
-}
-
-func (g *Game) points() int {
-	n := 0
-	for _, o := range g.offences {
-		if g.clock-o.t < 360 {
-			n += o.pts
-		}
-	}
-	return n
-}
-
-func (g *Game) issueFine(reason string, amount, pts int) {
+func (g *Game) issueFine(reason string, amount int) {
 	g.money -= amount
 	g.finesTotal += amount
-	if pts > 0 {
-		g.offences = append(g.offences, Offence{g.clock, pts})
-	}
-	s := fmt.Sprintf("-£%d", amount)
-	if pts > 0 {
-		s += fmt.Sprintf("  +%d penalty points", pts)
-	}
 	g.fineTitle = reason
-	g.fineSub = s
+	g.fineSub = fmt.Sprintf("Fine: -£%d", amount)
 	g.fineTimer = 4.5
-	if g.points() >= 12 {
-		g.state = stGameOver
-	}
 }
 
 func (g *Game) policeNear(r float64) bool {
@@ -376,9 +352,8 @@ func (g *Game) policeNear(r float64) bool {
 	return false
 }
 
-// offence: camera==false means it only counts if police witness it (starts a chase).
-// Returns true if something happened.
-func (g *Game) offence(key, reason string, amount, pts int, needPolice bool) bool {
+// offence: needPolice means it only counts if a police car sees it (and pulls you over).
+func (g *Game) offence(key, reason string, amount int, needPolice bool) bool {
 	if g.cool[key] > 0 {
 		return false
 	}
@@ -386,14 +361,14 @@ func (g *Game) offence(key, reason string, amount, pts int, needPolice bool) boo
 		if g.chaser != nil || !g.policeNear(380) {
 			return false
 		}
-		g.startChase(reason, amount, pts)
+		g.startChase(reason, amount)
 		if g.chaser != nil {
 			g.cool[key] = 10
 		}
 		return g.chaser != nil
 	}
 	g.cool[key] = 8
-	g.issueFine(reason, amount, pts)
+	g.issueFine(reason, amount)
 	return true
 }
 
@@ -413,38 +388,24 @@ func (g *Game) updateLaw() {
 		if cam.cool > 0 {
 			cam.cool -= dt
 		}
-		if math.Hypot(cam.x-t.X, cam.y-t.Y) < 70 && cam.cool <= 0 {
-			cl := g.edgeLimitMph(cam.a, cam.b)
+		if math.Hypot(cam.x-t.X, cam.y-t.Y) < 80 && cam.cool <= 0 {
+			cl := g.roads[cam.road].Limit
 			if mph > cl*1.1+2 {
 				cam.cool = 6
-				g.issueFine(fmt.Sprintf("SPEED CAMERA: %d mph in a %d zone", int(mph), int(cl)), 100, 3)
+				g.issueFine(fmt.Sprintf("SPEED CAMERA: %d mph in a %d zone", int(mph), int(cl)), 100)
 			}
 		}
 	}
-	// police see you speeding
 	if name != "" && mph > lim*1.1+2 {
-		g.offence("speed", fmt.Sprintf("Speeding (%d mph in a %d)", int(mph), int(lim)), 100, 3, true)
+		g.offence("speed", fmt.Sprintf("Speeding (%d mph in a %d)", int(mph), int(lim)), 100, true)
 	}
-
-	// red lights (camera at every junction)
-	tx, ty := int(t.X/tile), int(t.Y/tile)
-	city, lx, ly := g.cityLocal(tx, ty)
-	inBox := city != nil && g.tiles[tx][ty] == TRoad && lx%period < 2 && ly%period < 2
-	if inBox && !g.prevInBox && t.Speed > 20 {
-		node := city.nodeID(lx/period, ly/period)
-		axis := 1
-		if math.Abs(g.prevY-g.nodes[node].Y) < 64 {
-			axis = 0
-		}
-		st := g.light(node, axis)
-		if st >= 2 {
-			g.offence("red", "RED LIGHT CAMERA: Went through a red light", 100, 3, false)
-		}
-	}
-	g.prevInBox = inBox
-	g.prevX, g.prevY = t.X, t.Y
 
 	// wrong side of the road (drive on the left!)
+	h := g.roadQuery(t.X, t.Y, 300)
+	fx, fy := math.Cos(t.Angle), math.Sin(t.Angle)
+	if t.Speed < 0 {
+		fx, fy = -fx, -fy
+	}
 	wrong := false
 	nearWorks := false
 	for _, in := range g.incidents {
@@ -452,46 +413,40 @@ func (g *Game) updateLaw() {
 			nearWorks = true
 		}
 	}
-	fx, fy := math.Cos(t.Angle), math.Sin(t.Angle)
-	if t.Speed < 0 {
-		fx, fy = -fx, -fy
-	}
-	if math.Abs(t.Speed) > 50 && !nearWorks && city != nil && g.tiles[tx][ty] == TRoad {
-		inV, inH := lx%period < 2, ly%period < 2
-		if inH && !inV {
-			cy := float64((city.TY + ly/period*period + 1) * tile)
-			if (fx > 0.6 && t.Y > cy+6) || (fx < -0.6 && t.Y < cy-6) {
+	if h.Road >= 0 && h.Edge < 0 && math.Abs(t.Speed) > 50 && !nearWorks {
+		rd := g.roads[h.Road]
+		inJunction := h.S < g.nodes[rd.A].R+20 || h.S > rd.Len-g.nodes[rd.B].R-20
+		_, _, rtx, rty := rd.at(h.S)
+		d := fx*rtx + fy*rty
+		if !inJunction && math.Abs(d) > 0.6 {
+			dir := 1.0
+			if d < 0 {
+				dir = -1
+			}
+			if h.Lat*dir < -8 {
 				wrong = true
 			}
-		}
-		if inV && !inH {
-			cx := float64((city.TX + lx/period*period + 1) * tile)
-			if (fy > 0.6 && t.X < cx-6) || (fy < -0.6 && t.X > cx+6) {
-				wrong = true
-			}
-		}
-	}
-	if math.Abs(t.Speed) > 50 && city == nil && g.tiles[tx][ty] == TMotor {
-		if (fx > 0.6 && t.Y > barrierY+6) || (fx < -0.6 && t.Y < barrierY-6) {
-			wrong = true
 		}
 	}
 	if wrong {
 		g.wrongTimer += dt
 		if g.wrongTimer > 2 {
-			g.offence("wrong", "Driving on the wrong side of the road", 100, 3, true)
+			g.offence("wrong", "Driving on the wrong side of the road", 100, true)
 		}
 	} else {
 		g.wrongTimer = 0
 	}
-	// pavement / grass
-	if k, _ := g.tileAt(t.X, t.Y); (k == TSidewalk || k == TGrass || k == TShoulder) && math.Abs(t.Speed) > 30 {
+	// pavement / verge / hard shoulder
+	k, _ := g.tileAt(t.X, t.Y)
+	offRoad := h.Edge > 6 && g.cityAt(t.X, t.Y) >= 0 && (k == TSidewalk || k == TGrass)
+	shoulder := h.Road >= 0 && g.roads[h.Road].Class == clMotorway && h.Edge < 0 && math.Abs(h.Lat) > mwRes+3*mwLane+4
+	if (offRoad || shoulder) && math.Abs(t.Speed) > 30 {
 		g.paveTimer += dt
 		if g.paveTimer > 1.5 {
-			if k == TShoulder {
-				g.offence("pave", "Driving on the hard shoulder", 100, 3, true)
+			if shoulder {
+				g.offence("pave", "Driving on the hard shoulder", 100, true)
 			} else {
-				g.offence("pave", "Driving on the pavement / verge", 100, 3, true)
+				g.offence("pave", "Driving on the pavement / verge", 100, true)
 			}
 		}
 	} else {
@@ -507,7 +462,7 @@ func (g *Game) updateLaw() {
 		ox, oy := t.X-c.x, t.Y-c.y
 		along := ox*c.hx + oy*c.hy
 		lat := ox*-c.hy + oy*c.hx
-		if along > 0 && along < 320 && math.Abs(lat) < 80 {
+		if along > 0 && along < 320 && math.Abs(lat) < 100 {
 			g.evBehind = true
 		}
 	}
@@ -516,8 +471,8 @@ func (g *Game) updateLaw() {
 	} else if !g.evBehind {
 		g.evIgnore = 0
 	}
-	if g.evIgnore > 5 || g.evBlockedTime > 4 {
-		g.offence("ev", "Failed to give way to an emergency vehicle", 100, 3, false)
+	if g.evIgnore > 6 || g.evBlockedTime > 5 {
+		g.offence("ev", "Failed to give way to an emergency vehicle", 100, false)
 		g.evIgnore, g.evBlockedTime = 0, 0
 	}
 	if !g.evBehind {
@@ -531,7 +486,7 @@ func (g *Game) updateLaw() {
 		if d < 220 && math.Abs(t.Speed) < 12 {
 			g.stopTime += dt
 			if g.stopTime > 1.5 {
-				g.issueFine("POLICE: "+g.chaseReason, g.chaseFine, g.chasePts)
+				g.issueFine("POLICE: "+g.chaseReason, g.chaseFine)
 				g.flash("The officer gives you a ticket and a stern look.")
 				g.endChase()
 			}
@@ -539,7 +494,7 @@ func (g *Game) updateLaw() {
 			g.stopTime = 0
 		}
 		if g.chaser != nil && g.chaseTime > 30 {
-			g.issueFine("POLICE: Failing to stop for police", 1000, 6)
+			g.issueFine("POLICE: Failing to stop for police", 1000)
 			g.endChase()
 		}
 	}
@@ -565,11 +520,7 @@ func (g *Game) makeOffers() {
 		if dup {
 			continue
 		}
-		sx, sy := p.bayCenter()
-		dx, dy := places[dst].bayCenter()
-		dist := math.Abs(sx-dx) + math.Abs(sy-dy)
-		pay := int((150+dist*0.22)/10) * 10
-		g.offers = append(g.offers, Job{Src: src, Dst: dst, Pay: pay, TimeLimit: math.Round(dist/120 + 35)})
+		g.offers = append(g.offers, jobFor(src, dst, p.Cargo))
 	}
 }
 
@@ -577,6 +528,82 @@ type Job struct {
 	Src, Dst  int
 	Pay       int
 	TimeLimit float64
+	Cargo     string
+	Custom    bool
+}
+
+// jobFor prices a job by how far apart the two places are.
+func jobFor(src, dst int, cargo string) Job {
+	sx, sy := places[src].bayCenter()
+	dx, dy := places[dst].bayCenter()
+	dist := math.Abs(sx-dx) + math.Abs(sy-dy)
+	pay := int((150+dist*0.22)/10) * 10
+	return Job{Src: src, Dst: dst, Pay: pay, TimeLimit: math.Round(dist/120 + 35), Cargo: cargo}
+}
+
+var cargoTypes = []string{"Parcels", "Timber", "Vegetables", "Gravel", "Beer Kegs", "Containers", "Machinery",
+	"Sausage Rolls", "Post", "Chelsea Buns", "Lab Equipment", "Strawberries", "Cereal", "Ale Barrels", "Furniture", "Pies", "Fuel Drums", "Bricks"}
+
+// jobPlaces is everything you can drive a custom job between (not fuel stations or the dealer).
+func jobPlaces() []int {
+	var out []int
+	for i, p := range places {
+		if !p.Dealer && p.Fuel == 0 && p.Charge == 0 {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+func (g *Game) updateJobMaker() {
+	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) || inpututil.IsKeyJustPressed(ebiten.KeyJ) {
+		g.state = stPlay
+		return
+	}
+	jp := jobPlaces()
+	if inpututil.IsKeyJustPressed(ebiten.KeyArrowLeft) || inpututil.IsKeyJustPressed(ebiten.KeyA) {
+		g.jmCol = (g.jmCol + 2) % 3
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyArrowRight) || inpututil.IsKeyJustPressed(ebiten.KeyD) || inpututil.IsKeyJustPressed(ebiten.KeyTab) {
+		g.jmCol = (g.jmCol + 1) % 3
+	}
+	d := 0
+	if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) || inpututil.IsKeyJustPressed(ebiten.KeyW) {
+		d = -1
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyArrowDown) || inpututil.IsKeyJustPressed(ebiten.KeyS) {
+		d = 1
+	}
+	switch g.jmCol {
+	case 0:
+		g.jmFrom = (g.jmFrom + d + len(jp)) % len(jp)
+		if p := places[jp[g.jmFrom]]; d != 0 && p.Cargo != "" {
+			for i, c := range cargoTypes {
+				if c == p.Cargo {
+					g.jmCargo = i
+				}
+			}
+		}
+	case 1:
+		g.jmTo = (g.jmTo + d + len(jp)) % len(jp)
+	case 2:
+		g.jmCargo = (g.jmCargo + d + len(cargoTypes)) % len(cargoTypes)
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
+		if jp[g.jmFrom] == jp[g.jmTo] {
+			g.jmMsg = "Pick-up and drop-off must be different places."
+			return
+		}
+		j := jobFor(jp[g.jmFrom], jp[g.jmTo], cargoTypes[g.jmCargo])
+		j.Pay = j.Pay * 9 / 10 / 10 * 10 // custom jobs pay a little less
+		j.Custom = true
+		g.job = j
+		g.phase = 1
+		g.loadTimer = 0
+		g.routeDirty = true
+		g.state = stPlay
+		g.flash("Custom job created! Head to " + places[j.Src].Name)
+	}
 }
 
 func (g *Game) target() *Place {
@@ -602,6 +629,7 @@ func (g *Game) updateJobs() {
 				g.phase = 1
 				g.loadTimer = 0
 				g.flash("Job accepted! Head to " + places[g.job.Src].Name)
+				g.routeDirty = true
 			}
 		}
 	} else if inpututil.IsKeyJustPressed(ebiten.KeyC) {
@@ -678,7 +706,7 @@ func (g *Game) updateJobs() {
 				g.phase = 2
 				g.timeLeft = g.job.TimeLimit
 				g.condition = 100
-				g.flash(fmt.Sprintf("Loaded %s! Deliver to %s", places[g.job.Src].Cargo, places[g.job.Dst].Name))
+				g.flash(fmt.Sprintf("Loaded %s! Deliver to %s", g.job.Cargo, places[g.job.Dst].Name))
 			} else {
 				pay := float64(g.job.Pay) * g.condition / 100
 				late := 0

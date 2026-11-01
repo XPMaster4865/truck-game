@@ -52,6 +52,42 @@ type Sound struct {
 	ctx    *audio.Context
 	siren  *sirenStream
 	player *audio.Player
+	horn   *hornStream
+	hornP  *audio.Player
+}
+
+// hornStream: a two-note lorry horn (truck) or a short beep from other cars.
+type hornStream struct {
+	target atomic.Uint64
+	pitch  atomic.Uint64
+	vol    float64
+	ph1    float64
+	ph2    float64
+}
+
+func (s *hornStream) Read(b []byte) (int, error) {
+	n := len(b) / 4 * 4
+	target := math.Float64frombits(s.target.Load())
+	pitch := math.Float64frombits(s.pitch.Load())
+	if pitch == 0 {
+		pitch = 1
+	}
+	for i := 0; i < n; i += 4 {
+		s.vol += (target - s.vol) * 0.003
+		s.ph1 += 2 * math.Pi * 220 * pitch / sampleRate
+		s.ph2 += 2 * math.Pi * 277 * pitch / sampleRate
+		if s.ph1 > 2*math.Pi {
+			s.ph1 -= 2 * math.Pi
+		}
+		if s.ph2 > 2*math.Pi {
+			s.ph2 -= 2 * math.Pi
+		}
+		x := (math.Tanh(3*math.Sin(s.ph1)) + math.Tanh(3*math.Sin(s.ph2))) * 0.3
+		v := int16(x * s.vol * 9000)
+		b[i], b[i+1] = byte(v), byte(v>>8)
+		b[i+2], b[i+3] = byte(v), byte(v>>8)
+	}
+	return n, nil
 }
 
 func newSound() *Sound {
@@ -68,6 +104,12 @@ func newSound() *Sound {
 	p.SetBufferSize(80_000_000) // 80ms
 	p.Play()
 	s.player = p
+	s.horn = &hornStream{}
+	if hp, err := s.ctx.NewPlayer(s.horn); err == nil {
+		hp.SetBufferSize(60_000_000)
+		hp.Play()
+		s.hornP = hp
+	}
 	return s
 }
 
@@ -79,6 +121,15 @@ func (s *Sound) setSiren(vol, pan float64) {
 	s.siren.pan.Store(math.Float64bits(pan))
 }
 
+// honk makes a nearby AI car beep at you.
+func (g *Game) honk(x, y float64) {
+	d := math.Hypot(x-g.truck.X, y-g.truck.Y)
+	if d < 900 {
+		g.aiHonk = 0.35
+		g.aiHonkVol = 0.7 * (1 - d/900)
+	}
+}
+
 // updateSound points the siren at the nearest vehicle with blue lights on.
 func (g *Game) updateSound() {
 	if g.sound == nil {
@@ -86,7 +137,17 @@ func (g *Game) updateSound() {
 	}
 	if g.state != stPlay {
 		g.sound.setSiren(0, 0)
+		g.sound.setHorn(0, 1)
 		return
+	}
+	switch {
+	case g.hornOn:
+		g.sound.setHorn(1, 1)
+	case g.aiHonk > 0:
+		g.aiHonk -= dt
+		g.sound.setHorn(g.aiHonkVol, 1.9)
+	default:
+		g.sound.setHorn(0, 1)
 	}
 	best, pan := 1e9, 0.0
 	for _, c := range g.cars {
@@ -121,4 +182,12 @@ func runWithSoundFallback(err error) bool {
 	cmd.Env = append(os.Environ(), "TRUCKHAUL_NOSOUND=1")
 	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
 	return cmd.Start() == nil
+}
+
+func (s *Sound) setHorn(vol, pitch float64) {
+	if s == nil || s.horn == nil {
+		return
+	}
+	s.horn.target.Store(math.Float64bits(vol))
+	s.horn.pitch.Store(math.Float64bits(pitch))
 }

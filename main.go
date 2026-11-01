@@ -25,16 +25,36 @@ const (
 	stGameOver
 	stShop
 	stMap
+	stJobMaker
 )
 
 type Game struct {
 	state         int
 	tiles         [mapW][mapH]TileKind
-	tileCity      [mapW][mapH]int8
+	tileEdge      [mapW][mapH]float32
 	yardOf        [mapW][mapH]int16
 	nodes         []Node
-	motorA        int
-	motorB        int
+	roads         []*Road
+	motorways     []int
+	segIdx        map[int][]segRef
+	hornOn        bool
+	aiHonk        float64
+	aiHonkVol     float64
+	gpsOn         bool
+	gpsX, gpsY    float64
+	route         [][2]float64
+	routeSteps    []routeStep
+	routeLen      float64
+	routeTimer    float64
+	routeDirty    bool
+	gpsText       string
+	gpsTurn       int
+	mapOX, mapOY  float64
+	mapPanY       float64
+	jmCol         int
+	jmFrom, jmTo  int
+	jmCargo       int
+	jmMsg         string
 	buildings     []Rect
 	cameras       []*Camera
 	chunkCache    map[[2]int]*ebiten.Image
@@ -72,7 +92,6 @@ type Game struct {
 	loadTimer          float64
 	money, deliveries  int
 	finesTotal         int
-	offences           []Offence
 	cool               map[string]float64
 	wrongTimer         float64
 	paveTimer          float64
@@ -82,7 +101,6 @@ type Game struct {
 	chaser             *Car
 	chaseReason        string
 	chaseFine          int
-	chasePts           int
 	chaseTime          float64
 	stopTime           float64
 	roadName           string
@@ -147,7 +165,9 @@ func (g *Game) reset() {
 	x, y := start.bayCenter()
 	g.truck = Truck{X: x, Y: y}
 	g.money, g.deliveries, g.finesTotal, g.phase = 500, 0, 0, 0
-	g.offences = nil
+	g.gpsOn = false
+	g.route = nil
+	g.routeDirty = true
 	g.cool = map[string]float64{}
 	g.condition = 100
 	g.limit = 30
@@ -180,19 +200,20 @@ func (g *Game) reset() {
 		g.cars = append(g.cars, g.newCar(k))
 	}
 	// some traffic already on the motorway
-	for n := 0; n < 16; n++ {
+	for n := 0; n < 36; n++ {
 		k := kCar
 		if n%3 == 0 {
 			k = kLorry
 		}
 		c := g.makeCar(k)
-		if n%2 == 0 {
-			c.a, c.b = g.motorA, g.motorB
+		mi := g.motorways[n%len(g.motorways)]
+		mr := g.roads[mi]
+		if (n/2)%2 == 0 {
+			g.setRoad(c, mi, mr.A)
 		} else {
-			c.a, c.b = g.motorB, g.motorA
+			g.setRoad(c, mi, mr.B)
 		}
-		g.startEdge(c)
-		c.t = 900 + float64(n/2)*1600 + g.rng.Float64()*300
+		c.t = 900 + float64(n/4)*1300 + g.rng.Float64()*300
 		c.off = g.laneTarget(c)
 		c.inTurn = false
 		g.setNext(c)
@@ -317,9 +338,32 @@ func (g *Game) Update() error {
 		if inpututil.IsKeyJustPressed(ebiten.KeyM) || inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
 			g.state = stPlay
 		}
+		if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonRight) {
+			mx, my := ebiten.CursorPosition()
+			wx, wy := (float64(mx)-g.mapOX)/g.bms, (float64(my)-g.mapOY)/g.bms
+			if wx > 0 && wy > 0 && wx < worldW && wy < worldH {
+				g.gpsOn, g.gpsX, g.gpsY = true, wx, wy
+				g.routeDirty = true
+				g.updateGPS()
+				if len(g.route) == 0 {
+					g.gpsOn = false
+					g.flash("Can't find a route there.")
+				} else {
+					g.flash("Sat-nav: route set (" + fmtDist(g.routeLen) + "). Press G to clear.")
+				}
+			}
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyG) {
+			g.gpsOn = false
+			g.routeDirty = true
+		}
+		g.updateSound()
 		return nil
 	case stShop:
 		g.updateShop()
+		return nil
+	case stJobMaker:
+		g.updateJobMaker()
 		return nil
 	case stGameOver:
 		if g.hasSave {
@@ -338,7 +382,18 @@ func (g *Game) Update() error {
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyM) {
 		g.state = stMap
+		g.mapPan, g.mapPanY = 0, 0
 		return nil
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyJ) && g.phase == 0 {
+		g.state = stJobMaker
+		g.jmMsg = ""
+		return nil
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyG) && g.gpsOn {
+		g.gpsOn = false
+		g.routeDirty = true
+		g.flash("Sat-nav pin cleared.")
 	}
 	if g.fuel[g.cur] <= 0 && inpututil.IsKeyJustPressed(ebiten.KeyR) {
 		g.money -= 300
@@ -356,6 +411,7 @@ func (g *Game) Update() error {
 	if g.state == stPlay {
 		g.updateJobs()
 	}
+	g.updateGPS()
 	for _, t := range []*float64{&g.msgTimer, &g.fineTimer, &g.newsTimer} {
 		if *t > 0 {
 			*t -= dt
@@ -405,6 +461,9 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		c := p.Color
 		fillRect(screen, x-cx, y-cy, w, h, color.NRGBA{c.R / 2, c.G / 2, c.B / 2, a})
 	}
+	if g.state != stTitle {
+		g.drawRouteWorld(screen, cx, cy)
+	}
 	for _, in := range g.incidents {
 		g.drawIncident(screen, in, cx, cy)
 	}
@@ -452,6 +511,8 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		g.drawBigMap(screen)
 	case stShop:
 		g.drawShop(screen)
+	case stJobMaker:
+		g.drawJobMaker(screen)
 	case stGameOver:
 		fillRect(screen, 0, 0, screenW, screenH, color.NRGBA{60, 0, 0, 200})
 		drawTextShadow(screen, "LICENCE REVOKED", faceTitle, screenW/2, 160, rgb(255, 80, 80), text.AlignCenter)
@@ -463,13 +524,13 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 func (g *Game) drawControls(screen *ebiten.Image, y float64) {
 	lines := [][2]string{
-		{"W / Up", "Accelerate"}, {"S / Down", "Brake / Reverse"}, {"A D / Left Right", "Steer"}, {"Q / E", "Indicate left / right"}, {"H", "Hazard lights"},
+		{"W / Up", "Accelerate"}, {"S / Down", "Brake / Reverse"}, {"A D / Left Right", "Steer"}, {"Q / E", "Indicate left / right"}, {"X", "Hazard lights"}, {"H", "Horn"}, {"M + right-click", "Set sat-nav destination"}, {"J", "Create your own job"},
 		{"Space", "Handbrake"}, {"1  2  3", "Choose a job"}, {"M", "City map"},
 		{"C", "Cancel job"}, {"R", "Call recovery (when out of fuel)"}, {"P / Esc", "Pause"}, {"F", "Fullscreen"},
 	}
 	for i, l := range lines {
-		col := float64(i / 6)
-		row := float64(i % 6)
+		col := float64(i / 8)
+		row := float64(i % 8)
 		x := screenW/2 - 420 + col*440
 		drawTextShadow(screen, l[0], faceMed, x, y+row*30, rgb(255, 210, 60), text.AlignStart)
 		drawTextShadow(screen, l[1], faceSmall, x+180, y+row*30+3, color.White, text.AlignStart)
@@ -506,35 +567,32 @@ func (g *Game) drawHUD(screen *ebiten.Image) {
 	}
 	drawText(screen, pounds(g.money), faceBig, 26, 16, mc, text.AlignStart)
 	drawText(screen, fmt.Sprintf("Deliveries: %d", g.deliveries), faceSmall, 26, 56, white, text.AlignStart)
-	pts := g.points()
-	pc := color.Color(white)
-	if pts >= 9 {
-		pc = rgb(255, 80, 80)
-	} else if pts >= 6 {
-		pc = rgb(255, 200, 80)
-	}
-	drawText(screen, fmt.Sprintf("Licence: %d / 12 points", pts), faceSmall, 26, 78, pc, text.AlignStart)
+	drawText(screen, "Fines paid: "+pounds(g.finesTotal), faceSmall, 26, 78, white, text.AlignStart)
 	drawText(screen, m.Name, faceSmall, 26, 100, rgb(180, 200, 255), text.AlignStart)
 
 	// job panel
-	w := 600.0
-	x := screenW/2 - w/2 - 20
+	w := 660.0
+	x := 284.0
 	if g.phase == 0 {
 		panel(screen, x, 12, w, 150)
-		drawText(screen, "JOB BOARD - press 1, 2 or 3 to pick a job", faceMed, x+w/2, 20, rgb(255, 220, 80), text.AlignCenter)
+		drawText(screen, "JOB BOARD - 1/2/3 to pick  ·  J = make your own", faceMed, x+w/2, 20, rgb(255, 220, 80), text.AlignCenter)
 		for i, o := range g.offers {
-			s := fmt.Sprintf("%d)  %s:  %s  ->  %s", i+1, places[o.Src].Cargo, places[o.Src].Name, places[o.Dst].Name)
-			drawText(screen, s, faceSmall, x+20, 58+float64(i)*32, white, text.AlignStart)
+			s := fmt.Sprintf("%d)  %s:  %s  ->  %s", i+1, o.Cargo, places[o.Src].Name, places[o.Dst].Name)
+			jf := faceSmall
+			if len(s) > 52 {
+				jf = faceTiny
+			}
+			drawText(screen, s, jf, x+20, 58+float64(i)*32, white, text.AlignStart)
 			drawText(screen, fmt.Sprintf("%s  /  %.0fs", pounds(o.Pay), o.TimeLimit), faceSmall, x+w-20, 58+float64(i)*32, rgb(120, 240, 120), text.AlignEnd)
 		}
 	} else {
 		panel(screen, x, 12, w, 86)
 		var line1 string
 		if g.phase == 1 {
-			line1 = fmt.Sprintf("Pick up %s at %s", places[g.job.Src].Cargo, places[g.job.Src].Name)
+			line1 = fmt.Sprintf("Pick up %s at %s", g.job.Cargo, places[g.job.Src].Name)
 			drawText(screen, fmt.Sprintf("Then deliver to %s for %s", places[g.job.Dst].Name, pounds(g.job.Pay)), faceSmall, x+w/2, 50, white, text.AlignCenter)
 		} else {
-			line1 = fmt.Sprintf("Deliver %s to %s", places[g.job.Src].Cargo, places[g.job.Dst].Name)
+			line1 = fmt.Sprintf("Deliver %s to %s", g.job.Cargo, places[g.job.Dst].Name)
 			tl := g.timeLeft
 			tcol := color.Color(white)
 			ts := fmt.Sprintf("Time: %d:%02d", int(tl)/60, int(tl)%60)
@@ -584,7 +642,7 @@ func (g *Game) drawHUD(screen *ebiten.Image) {
 
 	// news
 	if g.newsTimer > 0 {
-		nw := 320.0
+		nw := 300.0
 		nx := screenW - nw - 12
 		panel(screen, nx, 12, nw, 78)
 		fillRect(screen, nx, 12, 6, 78, rgb(230, 40, 40))
@@ -637,8 +695,81 @@ func (g *Game) drawHUD(screen *ebiten.Image) {
 		drawText(screen, g.fineSub, faceMed, screenW/2, fy+38, rgb(255, 230, 120), text.AlignCenter)
 	}
 
+	// sat-nav instruction
+	if g.gpsText != "" {
+		gw := 460.0
+		gx := 12.0
+		gy := 172.0
+		panel(screen, gx, gy, gw, 62)
+		fillRect(screen, gx, gy, 62, 62, rgb(40, 110, 220))
+		drawTurnArrow(screen, gx+31, gy+31, g.gpsTurn, rgb(255, 255, 255))
+		label := "SAT-NAV"
+		if g.gpsOn {
+			label = "SAT-NAV  (pin - G to clear)"
+		}
+		drawText(screen, label, faceSign, gx+72, gy+6, rgb(120, 180, 255), text.AlignStart)
+		drawText(screen, g.gpsText, faceSmall, gx+72, gy+26, white, text.AlignStart)
+	}
+	g.drawJunctionAhead(screen)
 	g.drawDash(screen)
 	g.drawMinimap(screen)
+}
+
+// drawJunctionAhead shows the light / sign that applies to YOU at the next junction.
+func (g *Game) drawJunctionAhead(screen *ebiten.Image) {
+	h := g.roadQuery(g.truck.X, g.truck.Y, 200)
+	if h.Road < 0 || h.Edge > 10 || math.Abs(g.truck.Speed) < 1 && false {
+		return
+	}
+	rd := g.roads[h.Road]
+	if rd.Class == clMotorway {
+		return
+	}
+	_, _, tx, ty := rd.at(h.S)
+	fx, fy := math.Cos(g.truck.Angle), math.Sin(g.truck.Angle)
+	node, dist := rd.B, rd.Len-h.S
+	if fx*tx+fy*ty < 0 {
+		node, dist = rd.A, h.S
+	}
+	n := g.nodes[node]
+	dist -= n.R
+	if dist > 420 || dist < -10 || n.Ctrl == ctrlNone {
+		return
+	}
+	a := g.apprOf(node, h.Road)
+	if a == nil {
+		return
+	}
+	x, y := 404.0, screenH-120.0
+	switch {
+	case n.Ctrl == ctrlLights:
+		st := g.light(node, a.Axis)
+		panel(screen, x, y-46, 60, 104)
+		fillRect(screen, x+12, y-38, 36, 88, rgb(20, 20, 22))
+		for k, lamp := range []int{2, 1, 0} {
+			lc := lightColor(lamp)
+			on := st == lamp || (st == 3 && lamp != 0)
+			if on {
+				fillCircle(screen, x+30, y-24+float64(k)*29, 11, lc)
+			} else {
+				fillCircle(screen, x+30, y-24+float64(k)*29, 10, color.RGBA{lc.R / 5, lc.G / 5, lc.B / 5, 255})
+			}
+		}
+		drawText(screen, "YOUR LIGHT", faceSign, x+30, y+62, color.White, text.AlignCenter)
+	case a.Stop:
+		drawOct(screen, x+30, y, 26, rgb(200, 20, 20))
+		drawOct(screen, x+30, y, 22, rgb(240, 240, 240))
+		drawOct(screen, x+30, y, 20, rgb(200, 20, 20))
+		drawText(screen, "STOP", faceSign, x+30, y-8, color.White, text.AlignCenter)
+		drawText(screen, "STOP AHEAD", faceSign, x+30, y+34, color.White, text.AlignCenter)
+	case !a.Major:
+		fillTri(screen, x, y-20, x+60, y-20, x+30, y+28, rgb(210, 20, 20))
+		fillTri(screen, x+10, y-14, x+50, y-14, x+30, y+16, rgb(240, 240, 240))
+		drawText(screen, "GIVE WAY", faceSign, x+30, y+34, color.White, text.AlignCenter)
+	default:
+		drawText(screen, "You have", faceSign, x+30, y-14, rgb(160, 230, 160), text.AlignCenter)
+		drawText(screen, "priority", faceSign, x+30, y+2, rgb(160, 230, 160), text.AlignCenter)
+	}
 }
 
 func (g *Game) drawDash(screen *ebiten.Image) {
@@ -783,6 +914,7 @@ func (g *Game) drawMinimap(screen *ebiten.Image) {
 	op := &ebiten.DrawImageOptions{}
 	op.GeoM.Translate(ox, oy)
 	g.mini.DrawImage(g.bigMap, op)
+	g.drawRouteMap(g.mini, ox, oy, s)
 	g.mapMarkers(g.mini, ox, oy, s, false)
 	// target arrow at edge if off minimap
 	if p := g.target(); p != nil {
@@ -807,33 +939,105 @@ func (g *Game) drawBigMap(screen *ebiten.Image) {
 	fillRect(screen, 0, 0, screenW, screenH, color.RGBA{0, 0, 0, 200})
 	bw, bh := float64(g.bigMap.Bounds().Dx()), float64(g.bigMap.Bounds().Dy())
 	s := g.bms
-	vw := math.Min(bw, 1240)
+	vx0, vy0, vw, vh := 20.0, 44.0, float64(screenW-40), float64(screenH-80)
+	sp := 900 * dt
 	if pressed(ebiten.KeyArrowLeft, ebiten.KeyA) {
-		g.mapPan -= 900 * dt
+		g.mapPan -= sp
 	}
 	if pressed(ebiten.KeyArrowRight, ebiten.KeyD) {
-		g.mapPan += 900 * dt
+		g.mapPan += sp
 	}
-	center := g.truck.X*s + g.mapPan
-	left := math.Max(0, math.Min(bw-vw, center-vw/2))
-	ox, oy := (screenW-vw)/2-left, (screenH-bh)/2+30
-	view := screen.SubImage(image.Rect(int((screenW-vw)/2), 0, int((screenW+vw)/2), screenH)).(*ebiten.Image)
+	if pressed(ebiten.KeyArrowUp, ebiten.KeyW) {
+		g.mapPanY -= sp
+	}
+	if pressed(ebiten.KeyArrowDown, ebiten.KeyS) {
+		g.mapPanY += sp
+	}
+	left := math.Max(0, math.Min(bw-vw, g.truck.X*s+g.mapPan-vw/2))
+	top := math.Max(0, math.Min(bh-vh, g.truck.Y*s+g.mapPanY-vh/2))
+	g.mapPan = left + vw/2 - g.truck.X*s
+	g.mapPanY = top + vh/2 - g.truck.Y*s
+	ox, oy := vx0-left, vy0-top
+	g.mapOX, g.mapOY = ox, oy
+	view := screen.SubImage(image.Rect(int(vx0), int(vy0), int(vx0+vw), int(vy0+vh))).(*ebiten.Image)
 	op := &ebiten.DrawImageOptions{}
 	op.GeoM.Translate(ox, oy)
 	view.DrawImage(g.bigMap, op)
 	for _, c := range cities {
-		for j, n := range c.HNames {
-			y := float64((c.TY+j*period+1)*tile) * s
-			x := float64((c.TX+(c.BX*period+2)/2)*tile) * s
-			drawText(view, n, faceSign, ox+x, oy+y-7, color.NRGBA{255, 255, 200, 200}, text.AlignCenter)
-		}
-		x := float64((c.TX+(c.BX*period+2)/2)*tile) * s
-		drawTextShadow(view, c.Name, faceBig, ox+x, oy-34, rgb(255, 210, 60), text.AlignCenter)
+		x := c.OX + float64(c.Cols-1)*c.S/2
+		drawTextShadow(view, c.Name, faceBig, ox+x*s, oy+c.OY*s-48, rgb(255, 210, 60), text.AlignCenter)
 	}
-	drawTextShadow(view, "M11", faceBig, ox+float64((lonW+camTX)/2*tile)*s, oy+barrierY*s-60, rgb(120, 170, 255), text.AlignCenter)
+	for _, mi := range g.motorways {
+		mr := g.roads[mi]
+		mx, my, _, _ := mr.at(mr.Len / 2)
+		drawTextShadow(view, mr.Name, faceBig, ox+mx*s+40, oy+my*s-60, rgb(120, 170, 255), text.AlignCenter)
+	}
+	g.drawRouteMap(view, ox, oy, s)
 	g.mapMarkers(view, ox, oy, s, true)
-	drawTextShadow(screen, "MAP  -  Left/Right to scroll  ·  M to close", faceMed, screenW/2, 8, color.White, text.AlignCenter)
-	drawText(screen, "! red = collision   ! orange = roadworks   F = fuel   E = EV charging   white ring = destination", faceTiny, screenW/2, screenH-28, color.RGBA{220, 220, 220, 255}, text.AlignCenter)
+	cxp, cyp := ebiten.CursorPosition()
+	wx, wy := (float64(cxp)-ox)/s, (float64(cyp)-oy)/s
+	if hh := g.roadQuery(wx, wy, 300); hh.Road >= 0 && hh.Edge < 60 {
+		drawTextShadow(screen, g.roads[hh.Road].Name, faceSmall, float64(cxp)+14, float64(cyp)-8, rgb(255, 255, 200), text.AlignStart)
+	}
+	drawTextShadow(screen, "MAP  -  RIGHT-CLICK = set sat-nav destination  ·  Arrows/WASD scroll  ·  G clear  ·  M close", faceMed, screenW/2, 10, color.White, text.AlignCenter)
+	drawText(screen, "! red = collision   ! orange = roadworks   F = fuel   E = EV charging   white ring = job   red pin = sat-nav", faceTiny, screenW/2, screenH-28, color.RGBA{220, 220, 220, 255}, text.AlignCenter)
+}
+
+func (g *Game) drawJobMaker(screen *ebiten.Image) {
+	fillRect(screen, 0, 0, screenW, screenH, color.RGBA{0, 0, 0, 225})
+	drawTextShadow(screen, "CREATE YOUR OWN JOB", faceBig, screenW/2, 18, rgb(255, 210, 60), text.AlignCenter)
+	drawText(screen, "Left/Right = choose column   ·   Up/Down = choose   ·   ENTER = start job   ·   Esc = cancel", faceSmall, screenW/2, 58, color.White, text.AlignCenter)
+	jp := jobPlaces()
+	cols := []struct {
+		title string
+		sel   int
+		items []string
+		x     float64
+	}{
+		{"PICK UP FROM", g.jmFrom, nil, 40},
+		{"DELIVER TO", g.jmTo, nil, 450},
+		{"CARGO", g.jmCargo, cargoTypes, 860},
+	}
+	for _, i := range jp {
+		town := "London"
+		if c := places[i].City; c >= 0 {
+			town = cities[c].Name
+		}
+		cols[0].items = append(cols[0].items, places[i].Name+"  ("+town+")")
+	}
+	cols[1].items = cols[0].items
+	for ci, c := range cols {
+		y0 := 100.0
+		hl := ci == g.jmCol
+		tc := color.Color(rgb(160, 160, 170))
+		if hl {
+			tc = rgb(255, 210, 60)
+		}
+		drawText(screen, c.title, faceMed, c.x, y0, tc, text.AlignStart)
+		// show a window of 12 items around the selection
+		start := max(0, min(c.sel-6, len(c.items)-12))
+		for k := start; k < min(len(c.items), start+12); k++ {
+			y := y0 + 36 + float64(k-start)*30
+			if k == c.sel {
+				col := color.NRGBA{255, 210, 60, 50}
+				if !hl {
+					col = color.NRGBA{255, 255, 255, 25}
+				}
+				fillRect(screen, c.x-8, y-3, 380, 28, col)
+			}
+			drawText(screen, c.items[k], faceSmall, c.x, y, color.White, text.AlignStart)
+		}
+	}
+	if jp[g.jmFrom] != jp[g.jmTo] {
+		j := jobFor(jp[g.jmFrom], jp[g.jmTo], cargoTypes[g.jmCargo])
+		pay := j.Pay * 9 / 10 / 10 * 10
+		sx, sy := places[j.Src].bayCenter()
+		dx, dy := places[j.Dst].bayCenter()
+		drawTextShadow(screen, fmt.Sprintf("%s  ·  %s  ·  %.0fs time limit  ·  pays %s", cargoTypes[g.jmCargo], fmtDist(math.Abs(sx-dx)+math.Abs(sy-dy)), j.TimeLimit, pounds(pay)), faceMed, screenW/2, 520, rgb(120, 240, 120), text.AlignCenter)
+	}
+	if g.jmMsg != "" {
+		drawTextShadow(screen, g.jmMsg, faceMed, screenW/2, 560, rgb(255, 110, 110), text.AlignCenter)
+	}
 }
 
 func bar(screen *ebiten.Image, x, y, w, frac float64, c color.Color) {

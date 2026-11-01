@@ -43,13 +43,8 @@ func (g *Game) save() {
 	if g.noSave {
 		return
 	}
-	d := SaveData{Version: 3, Money: g.money, Deliveries: g.deliveries, FinesTotal: g.finesTotal,
+	d := SaveData{Version: 4, Money: g.money, Deliveries: g.deliveries, FinesTotal: g.finesTotal,
 		Owned: g.owned, Paint: g.paint, Fuel: g.fuel, Cur: g.cur, X: g.truck.X, Y: g.truck.Y, A: g.truck.Angle}
-	for _, o := range g.offences {
-		if g.clock-o.t < 360 {
-			d.Offences = append(d.Offences, saveOffence{g.clock - o.t, o.pts})
-		}
-	}
 	b, err := json.MarshalIndent(d, "", "  ")
 	if err != nil {
 		return
@@ -93,13 +88,10 @@ func (g *Game) load() bool {
 		g.truck.X, g.truck.Y, g.truck.Angle = d.X, d.Y, d.A
 		g.camX, g.camY = d.X-screenW/2, d.Y-screenH/2
 		for _, c := range g.cars {
-			if !g.isMotor(c.a, c.b) && c.x > g.truck.X-900 && c.x < g.truck.X+900 && c.y > g.truck.Y-600 && c.y < g.truck.Y+600 {
+			if !g.isMotor(c.road) && c.x > g.truck.X-900 && c.x < g.truck.X+900 && c.y > g.truck.Y-600 && c.y < g.truck.Y+600 {
 				g.respawnCar(c)
 			}
 		}
-	}
-	for _, o := range d.Offences {
-		g.offences = append(g.offences, Offence{g.clock - o.Age, o.Pts})
 	}
 	return true
 }
