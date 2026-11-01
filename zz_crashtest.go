@@ -4,12 +4,17 @@ package main
 
 import (
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"runtime/debug"
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
 )
+
+var shot string
+var shotX, shotY float64
 
 type ct struct {
 	*Game
@@ -56,6 +61,22 @@ func (t *ct) Update() error {
 			t.maxU = d
 		}
 	}
+	if t.n >= 20 && t.n < 80 && t.n%15 == 5 {
+		// park the camera on a lights junction that has a minor road
+		k := 0
+		for id, nd := range t.nodes {
+			if nd.Ctrl == ctrlLights && nd.City == 0 && len(nd.Roads) == 3 {
+				if k == (t.n-20)/15 {
+					shotX, shotY = nd.X-screenW/2, nd.Y-screenH/2
+					t.truck.X, t.truck.Y = nd.X-900, nd.Y-900
+					shot = fmt.Sprintf("/tmp/ct/junction%d.png", k)
+					_ = id
+					break
+				}
+				k++
+			}
+		}
+	}
 	if t.n == 600 {
 		fmt.Printf("600 frames OK. update avg %.2fms max %.1fms | draw max %.1fms\n", float64(t.sumU.Microseconds())/595/1000, float64(t.maxU.Microseconds())/1000, float64(t.maxD.Microseconds())/1000)
 		return ebiten.Termination
@@ -72,7 +93,19 @@ func (t *ct) Draw(s *ebiten.Image) {
 		}
 	}()
 	t0 := time.Now()
+	if shot != "" {
+		t.camX, t.camY = shotX, shotY
+	}
 	t.Game.Draw(s)
+	if shot != "" && t.n%15 == 6 {
+		b := s.Bounds()
+		px := make([]byte, 4*b.Dx()*b.Dy())
+		s.ReadPixels(px)
+		f, _ := os.Create(shot)
+		png.Encode(f, &image.RGBA{Pix: px, Stride: 4 * b.Dx(), Rect: b})
+		f.Close()
+		shot = ""
+	}
 	if d := time.Since(t0); t.n > 5 && d > t.maxD {
 		t.maxD = d
 	}

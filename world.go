@@ -429,11 +429,45 @@ func curve(ax, ay, bx, by, amp float64, sShape bool) [][2]float64 {
 	var pts [][2]float64
 	for i := 0; i <= n; i++ {
 		u := float64(i) / float64(n)
-		o := amp * math.Sin(math.Pi*u)
+		// sin² / sin·sin2 shapes have zero slope at both ends, so every road
+		// meets its junctions square-on and stop lines stay on their own road
+		sp := math.Sin(math.Pi * u)
+		o := amp * sp * sp
 		if sShape {
-			o = amp * math.Sin(2*math.Pi*u) * 0.8
+			o = amp * math.Sin(2*math.Pi*u) * sp
 		}
 		pts = append(pts, [2]float64{ax + (bx-ax)*u + px*o, ay + (by-ay)*u + py*o})
+	}
+	return pts
+}
+
+// gridCurve joins two junctions with a road that leaves and arrives along the street
+// grid (so junctions are square crossroads), optionally bowing out in the middle.
+func gridCurve(ax, ay, bx, by float64, horiz bool, amp float64, sShape bool) [][2]float64 {
+	l := math.Hypot(bx-ax, by-ay)
+	var ux, uy float64
+	if horiz {
+		ux = math.Copysign(1, bx-ax)
+	} else {
+		uy = math.Copysign(1, by-ay)
+	}
+	px, py := -uy, ux
+	p1x, p1y := ax+ux*l/3, ay+uy*l/3
+	p2x, p2y := bx-ux*l/3, by-uy*l/3
+	n := int(l/24) + 2
+	var pts [][2]float64
+	for i := 0; i <= n; i++ {
+		u := float64(i) / float64(n)
+		a, b, c, d := (1-u)*(1-u)*(1-u), 3*(1-u)*(1-u)*u, 3*(1-u)*u*u, u*u*u
+		x := a*ax + b*p1x + c*p2x + d*bx
+		y := a*ay + b*p1y + c*p2y + d*by
+		// bends only in the middle: the first and last ~20% stay dead straight
+		bump := smooth01((u-0.18)/0.27) * smooth01((0.82-u)/0.27)
+		o := amp * bump
+		if sShape {
+			o = amp * bump * math.Cos(math.Pi*(u-0.18)/0.64)
+		}
+		pts = append(pts, [2]float64{x + px*o, y + py*o})
 	}
 	return pts
 }
@@ -553,7 +587,7 @@ func (g *Game) genCity(r *rand.Rand, ci int) [][]int {
 		if e.main {
 			cl = clMain
 		}
-		g.addRoad(a, b, curve(na.X, na.Y, nb.X, nb.Y, amp, sShape), cl, lim, name, ci)
+		g.addRoad(a, b, gridCurve(na.X, na.Y, nb.X, nb.Y, horiz, amp, sShape), cl, lim, name, ci)
 	}
 	return ids
 }
