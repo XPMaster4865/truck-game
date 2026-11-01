@@ -70,7 +70,7 @@ func (t *ct) Update() error {
 		k := 0
 		for _, p := range places {
 			if p.MW > 0 {
-				if (t.n == 95 && k == 0) || (t.n == 110 && k == 0) {
+				if (t.n == 95 && k == 2) || (t.n == 110 && k == 2) {
 					sl := t.slips[k*2+(t.n-95)/15]
 					x, y, _, _ := sl.at(sl.Len * 0.3)
 					if (t.n-95)/15 == 1 {

@@ -994,6 +994,9 @@ func (g *Game) placeYards(r *rand.Rand) {
 			}
 			lx, ly := ty*side, -tx*side
 			off := rd.halfAt(s) + pavement + 4
+			if p.MW > 0 {
+				off += 300 // set services back so the slip roads can curve away from the motorway
+			}
 			var ttx, tty, face int
 			if math.Abs(lx) > math.Abs(ly) { // yard east or west of road
 				if lx > 0 {
@@ -1171,7 +1174,7 @@ func (g *Game) buildSlips() {
 							continue
 						}
 						cx, cy := float64(xx*tile+32), float64(yy*tile+32)
-						if math.Hypot(cx-x, cy-y) < 70 {
+						if math.Hypot(cx-x, cy-y) < 52 {
 							g.tiles[xx][yy] = TYard
 							g.yardOf[xx][yy] = int16(pi + 1)
 							g.slipTile[xx][yy] = true
@@ -1606,6 +1609,9 @@ func (g *Game) drawChunk(img *ebiten.Image, ox, oy float64) {
 				if pi := g.yardOf[x][y]; pi > 0 {
 					fl = places[pi-1].Floor
 				}
+				if g.slipTile[x][y] {
+					fl = rgb(72, 140, 62) // verge beside a slip road
+				}
 				R(px, py, tile, tile, fl)
 				R(px, py, tile, 1, color.RGBA{0, 0, 0, 25})
 				R(px, py, 1, tile, color.RGBA{0, 0, 0, 25})
@@ -1652,6 +1658,7 @@ func (g *Game) drawChunk(img *ebiten.Image, ox, oy float64) {
 		if sl.x1+200 < ox || sl.y1+200 < oy || sl.x0-200 > ox+chunkSz || sl.y0-200 > oy+chunkSz {
 			continue
 		}
+		g.band(img, sl, 0, sl.Len, -46, 46, rgb(72, 140, 62), ox, oy, nil)
 		g.band(img, sl, 0, sl.Len, -40, 40, asphalt, ox, oy, nil)
 	}
 	for _, ri := range vis {
