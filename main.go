@@ -1208,7 +1208,7 @@ func main() {
 }
 
 // gameVersion is shown on the title screen and checked between online players.
-const gameVersion = "v5.3"
+const gameVersion = "v5.4"
 
 // smoothShapes turns on anti-aliasing; it's expensive, so only the HUD dials use it.
 var smoothShapes = false

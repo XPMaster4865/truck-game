@@ -1161,7 +1161,34 @@ func (g *Game) buildSlips() {
 		g.slips = append(g.slips, off, on)
 		// where the slip roads leave / join, the hard shoulder becomes the slip lane
 		mi := g.motorways[p.MW-1]
-		for _, z := range [][2]float64{{up - 750*side, up + 120*side}, {dn - 120*side, dn + 750*side}} {
+		// find where each slip really separates from / joins the carriageway
+		sepS := func(sl *Road, fromEnd bool) float64 {
+			best := -1.0
+			for k := 0; k <= 200; k++ {
+				ss := sl.Len * float64(k) / 200
+				if fromEnd {
+					ss = sl.Len - ss
+				}
+				x, y, _, _ := sl.at(ss)
+				h := g.roadQuery(x, y, 800)
+				if h.Road < 0 || g.roads[h.Road] != mr {
+					continue
+				}
+				best = h.S
+				if h.D > mwHalf+40 {
+					break
+				}
+			}
+			return best
+		}
+		offS, onS := sepS(off, false), sepS(on, true)
+		if offS < 0 {
+			offS = up + 700*side
+		}
+		if onS < 0 {
+			onS = dn - 700*side
+		}
+		for _, z := range [][2]float64{{up - 350*side, offS}, {onS, dn + 350*side}} {
 			g.slipZones[mi] = append(g.slipZones[mi], slipZone{lo: math.Min(z[0], z[1]), hi: math.Max(z[0], z[1]), side: side})
 		}
 		g.slipMW = append(g.slipMW, mi, mi)

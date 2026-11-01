@@ -72,9 +72,9 @@ func (t *ct) Update() error {
 			if p.MW > 0 {
 				if (t.n == 95 && k == 2) || (t.n == 110 && k == 2) {
 					sl := t.slips[k*2+(t.n-95)/15]
-					x, y, _, _ := sl.at(sl.Len * 0.3)
+					x, y, _, _ := sl.at(sl.Len * 0.15)
 					if (t.n-95)/15 == 1 {
-						x, y, _, _ = sl.at(sl.Len * 0.7)
+						x, y, _, _ = sl.at(sl.Len * 0.85)
 					}
 					shotX, shotY = x-screenW/2, y-screenH/2
 					shot = fmt.Sprintf("/tmp/ct/services%d_%d.png", k, t.n)
