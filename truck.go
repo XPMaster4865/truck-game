@@ -21,14 +21,17 @@ type TruckModel struct {
 	Economy  float64 // litres per 1000px
 	Color    color.RGBA
 	Blurb    string
+	Electric bool // Tank = battery kWh, Economy = kWh per 1000px
 }
 
 var models = []TruckModel{
-	{"Bedfud TK (old banger)", 0, 330, 170, 2.2, 550, 1.3, 250, 7.5, rgb(200, 60, 40), "Rusty, slow and leaks oil. It's a start."},
-	{"Velvo PO 6", 4000, 380, 215, 2.5, 660, 1.0, 300, 6.8, rgb(40, 90, 170), "Solid Swedish workhorse. Comfy cab."},
-	{"Sconia D", 9000, 430, 255, 2.75, 760, 0.8, 350, 6.2, rgb(235, 235, 235), "The King of the Road. V8 rumble included."},
-	{"PUF NGD", 16000, 470, 290, 3.0, 860, 0.6, 400, 5.6, rgb(25, 40, 90), "Dutch precision. Steers like it's on rails."},
-	{"Marcedes Actrus", 25000, 510, 330, 3.2, 960, 0.45, 450, 5.2, rgb(50, 50, 55), "Top of the range. Air suspension, cargo barely moves."},
+	{"Bedfud TK (old banger)", 0, 330, 170, 2.2, 550, 1.3, 250, 7.5, rgb(200, 60, 40), "Rusty, slow and leaks oil. It's a start.", false},
+	{"Velvo PO 6", 4000, 380, 215, 2.5, 660, 1.0, 300, 6.8, rgb(40, 90, 170), "Solid Swedish workhorse. Comfy cab.", false},
+	{"Sconia D", 9000, 430, 255, 2.75, 760, 0.8, 350, 6.2, rgb(235, 235, 235), "The King of the Road. V8 rumble included.", false},
+	{"PUF NGD", 16000, 470, 290, 3.0, 860, 0.6, 400, 5.6, rgb(25, 40, 90), "Dutch precision. Steers like it's on rails.", false},
+	{"Marcedes Actrus", 25000, 510, 330, 3.2, 960, 0.45, 450, 5.2, rgb(50, 50, 55), "Top of the range. Air suspension, cargo barely moves.", false},
+	{"Velvo PO Electric", 12000, 400, 310, 2.6, 720, 0.85, 300, 9.0, rgb(60, 160, 110), "Silent, instant torque. Needs a charging point.", true},
+	{"Teslo Simi", 30000, 520, 400, 3.1, 990, 0.5, 500, 7.5, rgb(235, 235, 240), "Futuristic electric beast. 0-60 before you blink.", true},
 }
 
 var paints = []struct {
@@ -122,6 +125,15 @@ func makeTruckImg(cab color.RGBA, cargo *color.RGBA, model int) *ebiten.Image {
 	return img
 }
 
+func (g *Game) setIndicator(v int) {
+	if g.ind == v {
+		g.ind = 0
+		return
+	}
+	g.ind = v
+	g.indAngle = g.truck.Angle
+}
+
 func (g *Game) truckCircles() [3][2]float64 {
 	t := g.truck
 	cs, sn := math.Cos(t.Angle), math.Sin(t.Angle)
@@ -176,6 +188,21 @@ func (g *Game) updateTruck() {
 	left := pressed(ebiten.KeyA, ebiten.KeyArrowLeft)
 	right := pressed(ebiten.KeyD, ebiten.KeyArrowRight)
 	hand := pressed(ebiten.KeySpace)
+	if inpututil.IsKeyJustPressed(ebiten.KeyQ) {
+		g.setIndicator(-1)
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyE) {
+		g.setIndicator(1)
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyH) {
+		g.setIndicator(2)
+	}
+	if g.ind == -1 || g.ind == 1 {
+		turned := math.Abs(math.Remainder(t.Angle-g.indAngle, 2*math.Pi))
+		if turned > 0.9 && !left && !right {
+			g.ind = 0 // self-cancelling indicator
+		}
+	}
 	if g.fuel[g.cur] <= 0 {
 		up, down = false, false
 	}
@@ -377,8 +404,8 @@ func (g *Game) updateLaw() {
 		}
 	}
 	t := &g.truck
-	name, lim := roadAt(t.X, t.Y)
-	g.roadName, g.limit = name, lim
+	town, name, lim := g.roadAt(t.X, t.Y)
+	g.town, g.roadName, g.limit = town, name, lim
 	mph := math.Abs(t.Speed) * mphK
 
 	// speed cameras
@@ -387,7 +414,7 @@ func (g *Game) updateLaw() {
 			cam.cool -= dt
 		}
 		if math.Hypot(cam.x-t.X, cam.y-t.Y) < 70 && cam.cool <= 0 {
-			cl := edgeLimitMph(cam.i, cam.j, cam.ni, cam.nj)
+			cl := g.edgeLimitMph(cam.a, cam.b)
 			if mph > cl*1.1+2 {
 				cam.cool = 6
 				g.issueFine(fmt.Sprintf("SPEED CAMERA: %d mph in a %d zone", int(mph), int(cl)), 100, 3)
@@ -401,15 +428,15 @@ func (g *Game) updateLaw() {
 
 	// red lights (camera at every junction)
 	tx, ty := int(t.X/tile), int(t.Y/tile)
-	inBox := tx >= 0 && ty >= 0 && tx%period < 2 && ty%period < 2
+	city, lx, ly := g.cityLocal(tx, ty)
+	inBox := city != nil && g.tiles[tx][ty] == TRoad && lx%period < 2 && ly%period < 2
 	if inBox && !g.prevInBox && t.Speed > 20 {
-		i, j := tx/period, ty/period
-		_, ny := nodePos(i, j)
+		node := city.nodeID(lx/period, ly/period)
 		axis := 1
-		if math.Abs(g.prevY-ny) < 64 {
+		if math.Abs(g.prevY-g.nodes[node].Y) < 64 {
 			axis = 0
 		}
-		st := g.light(i, j, axis)
+		st := g.light(node, axis)
 		if st >= 2 {
 			g.offence("red", "RED LIGHT CAMERA: Went through a red light", 100, 3, false)
 		}
@@ -419,23 +446,34 @@ func (g *Game) updateLaw() {
 
 	// wrong side of the road (drive on the left!)
 	wrong := false
-	if math.Abs(t.Speed) > 50 && tx >= 0 && ty >= 0 && tx < mapW && ty < mapH {
-		inV, inH := tx%period < 2, ty%period < 2
-		fx, fy := math.Cos(t.Angle), math.Sin(t.Angle)
-		if t.Speed < 0 {
-			fx, fy = -fx, -fy
+	nearWorks := false
+	for _, in := range g.incidents {
+		if in.kind == incWorksLight && math.Hypot(in.mx-t.X, in.my-t.Y) < 330 {
+			nearWorks = true
 		}
+	}
+	fx, fy := math.Cos(t.Angle), math.Sin(t.Angle)
+	if t.Speed < 0 {
+		fx, fy = -fx, -fy
+	}
+	if math.Abs(t.Speed) > 50 && !nearWorks && city != nil && g.tiles[tx][ty] == TRoad {
+		inV, inH := lx%period < 2, ly%period < 2
 		if inH && !inV {
-			_, cy := nodePos(0, ty/period)
+			cy := float64((city.TY + ly/period*period + 1) * tile)
 			if (fx > 0.6 && t.Y > cy+6) || (fx < -0.6 && t.Y < cy-6) {
 				wrong = true
 			}
 		}
 		if inV && !inH {
-			cx, _ := nodePos(tx/period, 0)
+			cx := float64((city.TX + lx/period*period + 1) * tile)
 			if (fy > 0.6 && t.X < cx-6) || (fy < -0.6 && t.X > cx+6) {
 				wrong = true
 			}
+		}
+	}
+	if math.Abs(t.Speed) > 50 && city == nil && g.tiles[tx][ty] == TMotor {
+		if (fx > 0.6 && t.Y > barrierY+6) || (fx < -0.6 && t.Y < barrierY-6) {
+			wrong = true
 		}
 	}
 	if wrong {
@@ -447,10 +485,14 @@ func (g *Game) updateLaw() {
 		g.wrongTimer = 0
 	}
 	// pavement / grass
-	if k, _ := g.tileAt(t.X, t.Y); (k == TSidewalk || k == TGrass) && math.Abs(t.Speed) > 30 {
+	if k, _ := g.tileAt(t.X, t.Y); (k == TSidewalk || k == TGrass || k == TShoulder) && math.Abs(t.Speed) > 30 {
 		g.paveTimer += dt
-		if g.paveTimer > 1 {
-			g.offence("pave", "Driving on the pavement / verge", 100, 3, true)
+		if g.paveTimer > 1.5 {
+			if k == TShoulder {
+				g.offence("pave", "Driving on the hard shoulder", 100, 3, true)
+			} else {
+				g.offence("pave", "Driving on the pavement / verge", 100, 3, true)
+			}
 		}
 	} else {
 		g.paveTimer = 0
@@ -579,17 +621,31 @@ func (g *Game) updateJobs() {
 
 	// fuel stations
 	g.fuelling = false
+	g.wrongPump = ""
 	for _, fs := range stations {
-		if g.inBay(fs.p) && stopped {
-			m := g.model()
-			if g.fuel[g.cur] < m.Tank-0.1 && g.money > 0 {
-				add := math.Min(25*dt, m.Tank-g.fuel[g.cur])
-				g.fuel[g.cur] += add
-				g.fuelBill += add * fs.price
-				g.fuelling = true
-				g.money -= int(g.fuelBill)
-				g.fuelBill -= float64(int(g.fuelBill))
+		if !g.inBay(fs.p) || !stopped {
+			continue
+		}
+		m := g.model()
+		price, rate := fs.p.Fuel, 25.0
+		if m.Electric {
+			price, rate = fs.p.Charge, m.Tank/120 // 0-100% in two minutes
+		}
+		if price <= 0 {
+			if m.Electric {
+				g.wrongPump = "No chargers here - electric trucks need a charging point (GridSwerve, Ionnity, services)"
+			} else {
+				g.wrongPump = "This is a charging hub - diesel trucks need a fuel station"
 			}
+			continue
+		}
+		if g.fuel[g.cur] < m.Tank-0.01 && g.money > 0 {
+			add := math.Min(rate*dt, m.Tank-g.fuel[g.cur])
+			g.fuel[g.cur] += add
+			g.fuelBill += add * price
+			g.fuelling = true
+			g.money -= int(g.fuelBill)
+			g.fuelBill -= float64(int(g.fuelBill))
 		}
 	}
 
@@ -642,6 +698,7 @@ func (g *Game) updateJobs() {
 				g.flash(s)
 				g.phase = 0
 				g.makeOffers()
+				g.save()
 			}
 		}
 	} else {
@@ -681,6 +738,7 @@ func (g *Game) updateShop() {
 					g.cur = g.shopSel
 				}
 				g.shopMsg = "Bought the " + m.Name + "! Full tank included."
+				g.save()
 			} else {
 				g.shopMsg = fmt.Sprintf("You need £%d more for that one.", m.Price-g.money)
 			}
@@ -703,6 +761,7 @@ func (g *Game) updateShop() {
 			g.money -= paintPrice
 			g.paint[g.shopSel] = g.shopPaint
 			g.shopMsg = "Resprayed in " + paints[g.shopPaint].Name + "!"
+			g.save()
 		}
 	}
 }

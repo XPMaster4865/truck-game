@@ -1,6 +1,6 @@
 # Truck Haul
 
-A top-down 2D lorry driving game set in a British town. Pick up cargo, deliver it on time, obey the Highway Code, and spend your earnings on better trucks.
+A top-down 2D lorry driving game set in Britain. Haul cargo around **London**, up the **M11 motorway** and into **Cambridge**. Deliver on time, obey the Highway Code, and spend your earnings on better trucks (diesel or electric).
 
 **Download:** grab `TruckHaul.exe` from this repo and double-click it (Windows, nothing to install).
 Windows SmartScreen may warn you the first time: click **More info → Run anyway**.
@@ -22,14 +22,24 @@ Arrive late and your pay drops. Crash and your cargo is damaged.
 | S / ↓ | Brake / reverse |
 | A D / ← → | Steer |
 | Space | Handbrake |
+| Q / E | Indicate left / right (self-cancelling) |
+| H | Hazard warning lights |
 | 1 2 3 | Choose a job |
-| M | Full city map |
+| M | Full map (Left/Right to scroll) |
 | C | Cancel job |
-| R | Call recovery when out of fuel (£300) |
+| R | Call recovery when out of fuel / battery (£300) |
 | P / Esc | Pause |
 | F | Fullscreen |
 
 ## Features
+
+- **Two cities + a motorway**: London (10 × 7 blocks) and Cambridge (6 × 4 blocks, 20 mph centre), joined by ~10 miles of the **M11**: two lanes each way, hard shoulders, central barrier, 70 mph, blue gantry signs, and **Welcome Brake** / **Roadchief** services with fuel and EV charging. Cross-city jobs pay the most.
+- **Cambridge jobs**: Fitzbilly's Bakery (Chelsea buns), Cambridge Science Park (lab equipment), Grantchester Farm (strawberries) → Addenbrookies Hospital, King's Collage, Grand Arcayde, Teaco Express, The Eagle Pub.
+- **Electric trucks**: Velvo PO Electric (£12,000) and Teslo Simi (£30,000). Charge at **GridSwerve Charging Hub** (London), **Ionnity Chargers** (Cambridge) or motorway services. A full 0–100% charge takes **2 minutes**. Diesel trucks can't use chargers and EVs can't use pumps.
+- **Indicators and hazard lights** on your truck. All traffic indicates at junctions and uses hazards when broken down, crashed or braking hard on the motorway.
+- **Roadworks with temporary traffic lights**: one lane is coned off and traffic takes turns.
+- **Sirens**: emergency vehicles have a two-tone siren that gets louder as they approach (stereo panned).
+- **Save files**: autosaves every 30 seconds, after each delivery and purchase. Continue from the title screen. Saved to `%APPDATA%\TruckHaul\save.json`.
 
 - **Big city**: 10 × 7 blocks with named streets (High Street, London Road, Station Road…) and 40 mph bypasses around the edge.
 - **Job sites**: Hillside Sawmill, Meadow Farm, Rocky Top Quarry, Brewdawg Brewery, Amazin' Warehouse, Port of Bristow, Steelworks, Greggz Bakery, Royal Male Depot.
@@ -56,6 +66,8 @@ Arrive late and your pay drops. Crash and your cargo is damaged.
   | Sconia D | £9,000 | 55 mph |
   | PUF NGD | £16,000 | 61 mph |
   | Marcedes Actrus | £25,000 | 66 mph |
+  | Velvo PO Electric ⚡ | £12,000 | 52 mph |
+  | Teslo Simi ⚡ | £30,000 | 67 mph |
 
   Better trucks have faster acceleration, sharper handling, stronger brakes, better cargo protection, bigger tanks and better fuel economy.
 - **Respray** any truck you own in 11 colours for £250.
@@ -74,5 +86,6 @@ go run .
 
 ## Changelog
 
+- **v3**: M11 motorway from London to Cambridge, Cambridge city, motorway services, electric trucks and charging points (2 min full charge), truck indicators and hazard lights, traffic hazard lights and breakdowns, roadworks with temporary traffic lights, emergency sirens (replaces the pop-up), save files.
 - **v2**: bigger map, UK rules (drive on the left, mph, £), traffic lights, smarter cars with indicators, RTCs and roadworks, emergency vehicles, police pull-overs, speed cameras, speed limits, fuel and fuel stations, truck dealer with 5 trucks, paint shop.
 - **v1**: first version with a small city, 8 job sites and simple traffic.

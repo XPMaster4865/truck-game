@@ -7,13 +7,14 @@ import (
 	"math/rand"
 
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/text/v2"
 )
 
 // ---------- traffic lights ----------
 
 // light returns 0 green, 1 amber, 2 red, 3 red+amber. axis 0 = east/west traffic, 1 = north/south.
-func (g *Game) light(i, j, axis int) int {
-	t := math.Mod(g.clock+g.lightOff[i][j], 22)
+func (g *Game) light(node, axis int) int {
+	t := math.Mod(g.clock+g.nodes[node].LightOff, 22)
 	if axis == 1 {
 		t = math.Mod(t+11, 22)
 	}
@@ -31,37 +32,85 @@ func (g *Game) light(i, j, axis int) int {
 // ---------- incidents ----------
 
 const (
-	incRTC = iota
-	incWorks
+	incRTC        = iota
+	incWorks      // full road closure
+	incWorksLight // one lane closed, temporary traffic lights
 )
 
 type Incident struct {
-	i, j, ni, nj int
-	kind         int
-	timer        float64
-	mx, my       float64
-	horiz        bool
-	seed         int64
+	a, b   int // closed lane belongs to traffic travelling a -> b
+	kind   int
+	timer  float64
+	mx, my float64
+	horiz  bool
+	seed   int64
+	phase0 float64
 }
 
+const zoneHalf = 50.0
+
 func (in *Incident) rect() (x0, y0, x1, y1 float64) {
+	if in.kind == incWorksLight {
+		// only the a->b lane (left of a->b direction) is closed
+		var lx, ly float64
+		if in.horiz {
+			dx := 1.0
+			if in.b < in.a {
+				dx = -1
+			}
+			lx, ly = 0, -dx
+		} else {
+			dy := 1.0
+			if in.b < in.a {
+				dy = -1
+			}
+			lx, ly = dy, 0
+		}
+		cx, cy := in.mx+lx*32, in.my+ly*32
+		if in.horiz {
+			return cx - zoneHalf, cy - 30, cx + zoneHalf, cy + 30
+		}
+		return cx - 30, cy - zoneHalf, cx + 30, cy + zoneHalf
+	}
 	if in.horiz {
 		return in.mx - 70, in.my - 64, in.mx + 70, in.my + 64
 	}
 	return in.mx - 64, in.my - 70, in.mx + 64, in.my + 70
 }
 
-func sameEdge(a, b, c, d, e, f, h, k int) bool {
-	return (a == e && b == f && c == h && d == k) || (a == h && b == k && c == e && d == f)
+// tempLight: state for traffic travelling a->b through a lane-closure. 0 green, 2 red.
+func (g *Game) tempLight(in *Incident, a, b int) int {
+	t := math.Mod(g.clock+in.phase0, 30)
+	if a != in.a {
+		t = math.Mod(t+15, 30)
+	}
+	if t < 8 {
+		return 0
+	}
+	if t < 9.5 {
+		return 1
+	}
+	return 2
 }
 
-func (g *Game) edgeBlocked(i, j, ni, nj int) bool {
+func sameEdge(a, b, c, d int) bool { return (a == c && b == d) || (a == d && b == c) }
+
+func (g *Game) edgeBlocked(a, b int) bool {
 	for _, in := range g.incidents {
-		if sameEdge(i, j, ni, nj, in.i, in.j, in.ni, in.nj) {
+		if in.kind != incWorksLight && sameEdge(a, b, in.a, in.b) {
 			return true
 		}
 	}
 	return false
+}
+
+func (g *Game) laneWorks(a, b int) *Incident {
+	for _, in := range g.incidents {
+		if in.kind == incWorksLight && sameEdge(a, b, in.a, in.b) {
+			return in
+		}
+	}
+	return nil
 }
 
 func (g *Game) visible(x, y, margin float64) bool {
@@ -70,51 +119,53 @@ func (g *Game) visible(x, y, margin float64) bool {
 
 func (g *Game) spawnIncident() {
 	for try := 0; try < 60; try++ {
-		i, j := g.rng.Intn(nodesX), g.rng.Intn(nodesY)
-		ni, nj := i+1, j
-		if g.rng.Intn(2) == 0 {
-			ni, nj = i, j+1
-		}
-		if ni >= nodesX || nj >= nodesY || g.edgeBlocked(i, j, ni, nj) {
+		a := g.rng.Intn(len(g.nodes))
+		b := g.nodes[a].Nb[g.rng.Intn(len(g.nodes[a].Nb))]
+		if g.isMotor(a, b) || g.edgeBlocked(a, b) || g.laneWorks(a, b) != nil {
 			continue
 		}
 		cam := false
 		for _, c := range g.cameras {
-			if sameEdge(i, j, ni, nj, c.i, c.j, c.ni, c.nj) {
+			if sameEdge(a, b, c.a, c.b) {
 				cam = true
 			}
 		}
 		if cam {
 			continue
 		}
-		ax, ay := nodePos(i, j)
-		bx, by := nodePos(ni, nj)
-		mx, my := (ax+bx)/2, (ay+by)/2
+		na, nb := g.nodes[a], g.nodes[b]
+		mx, my := (na.X+nb.X)/2, (na.Y+nb.Y)/2
 		if g.visible(mx, my, 300) {
 			continue
 		}
-		in := &Incident{i: i, j: j, ni: ni, nj: nj, mx: mx, my: my, horiz: j == nj, seed: g.rng.Int63()}
-		name := edgeName(i, j, ni, nj)
-		if g.rng.Float64() < 0.55 {
+		in := &Incident{a: a, b: b, mx: mx, my: my, horiz: na.J == nb.J, seed: g.rng.Int63(), phase0: g.rng.Float64() * 24}
+		name := g.edgeName(a, b)
+		town := cities[na.City].Name
+		switch r := g.rng.Float64(); {
+		case r < 0.4:
 			in.kind = incRTC
 			in.timer = 60 + g.rng.Float64()*50
-			g.newsFlash(fmt.Sprintf("Road traffic collision on %s.\nRoad closed - emergency services on scene.", name))
-		} else {
+			g.newsFlash(fmt.Sprintf("Collision on %s, %s.\nRoad closed - emergency services on scene.", name, town))
+		case r < 0.65:
 			in.kind = incWorks
 			in.timer = 120 + g.rng.Float64()*90
-			g.newsFlash(fmt.Sprintf("Emergency roadworks on %s.\nRoad closed - find another route.", name))
+			g.newsFlash(fmt.Sprintf("Emergency roadworks on %s, %s.\nRoad closed - find another route.", name, town))
+		default:
+			in.kind = incWorksLight
+			in.timer = 150 + g.rng.Float64()*120
+			g.newsFlash(fmt.Sprintf("Roadworks on %s, %s.\nTemporary traffic lights - expect delays.", name, town))
 		}
 		g.incidents = append(g.incidents, in)
 		for _, c := range g.cars {
 			if c.chase {
 				continue
 			}
-			if sameEdge(c.ai, c.aj, c.bi, c.bj, i, j, ni, nj) || (c.inTurn && sameEdge(c.bi, c.bj, c.ni, c.nj, i, j, ni, nj)) {
+			if sameEdge(c.a, c.b, a, b) || (c.inTurn && sameEdge(c.b, c.n, a, b)) {
 				g.respawnCar(c)
 			}
 		}
 		if in.kind == incRTC {
-			g.dispatchEV(evAmbulance)
+			g.dispatchEV(kAmbulance)
 		}
 		return
 	}
@@ -123,8 +174,8 @@ func (g *Game) spawnIncident() {
 func (g *Game) updateIncidents() {
 	g.nextIncident -= dt
 	if g.nextIncident <= 0 {
-		g.nextIncident = 40 + g.rng.Float64()*35
-		if len(g.incidents) < 4 {
+		g.nextIncident = 35 + g.rng.Float64()*30
+		if len(g.incidents) < 6 {
 			g.spawnIncident()
 		}
 	}
@@ -133,11 +184,25 @@ func (g *Game) updateIncidents() {
 		in.timer -= dt
 		if in.timer > 0 {
 			keep = append(keep, in)
+		} else if in.kind == incWorksLight {
+			g.newsFlash(g.edgeName(in.a, in.b) + ": roadworks finished,\ntemporary lights removed.")
 		} else {
-			g.newsFlash(edgeName(in.i, in.j, in.ni, in.nj) + " has now reopened.")
+			g.newsFlash(g.edgeName(in.a, in.b) + " has now reopened.")
 		}
 	}
 	g.incidents = keep
+
+	// random breakdowns on the motorway hard shoulder
+	g.nextBreakdown -= dt
+	if g.nextBreakdown <= 0 {
+		g.nextBreakdown = 20 + g.rng.Float64()*25
+		for _, c := range g.cars {
+			if !c.isEV() && !c.chase && !c.inTurn && g.isMotor(c.a, c.b) && c.t > 800 && c.t < g.edgeLen(c.a, c.b)-800 && !g.visible(c.x, c.y, 100) {
+				c.broken = 30 + g.rng.Float64()*30
+				break
+			}
+		}
+	}
 }
 
 // ---------- vehicles ----------
@@ -150,34 +215,32 @@ const (
 	kAmbulance
 	kFire
 	kPoliceEV
-)
-
-const (
-	evAmbulance = kAmbulance
-	evFire      = kFire
-	evPolice    = kPoliceEV
+	kLorry
 )
 
 type Car struct {
-	ai, aj, bi, bj, ni, nj int
-	inTurn                 bool
-	t                      float64
-	p0x, p0y, p1x, p1y     float64
-	p2x, p2y, turnLen      float64
-	speed, factor          float64
-	kind                   int
-	half, width            float64
-	img                    *ebiten.Image
-	x, y, hx, hy           float64
-	wait, ghost, crashed   float64
-	braking                bool
-	turnSign               int
-	lane, pull             float64
-	pulling                bool
-	life                   float64
-	// police chase
-	chase    bool
-	trailIdx int
+	a, b, n            int
+	inTurn             bool
+	t                  float64
+	p0x, p0y, p1x, p1y float64
+	p2x, p2y, turnLen  float64
+	speed, factor      float64
+	kind               int
+	half, width        float64
+	img                *ebiten.Image
+	x, y, hx, hy       float64
+	wait, ghost        float64
+	crashed, broken    float64
+	hazard             float64
+	braking            bool
+	turnSign           int
+	lane, mlane        float64
+	off                float64 // current smoothed lateral offset
+	pull               float64
+	pulling            bool
+	life               float64
+	chase              bool
+	trailIdx           int
 }
 
 func (c *Car) isEV() bool { return c.kind == kAmbulance || c.kind == kFire || c.kind == kPoliceEV }
@@ -215,6 +278,10 @@ func (g *Game) makeCar(kind int) *Car {
 		c.half, c.width = 43, 28
 		c.img = makeCarImg(86, 28, rgb(200, 30, 30), 2)
 		c.factor = 0.8
+	case kLorry:
+		c.half, c.width = 44, 32
+		c.img = makeTruckImg(carColors[g.rng.Intn(len(carColors))], &places[g.rng.Intn(9)].Color, 1)
+		c.factor = 0.8
 	case kPolice:
 		c.half, c.width = 23, 22
 		c.img = makeCarImg(46, 22, rgb(245, 245, 245), 3)
@@ -235,6 +302,7 @@ func (g *Game) makeCar(kind int) *Car {
 		c.factor = 1.7
 		c.lane = 6
 	}
+	c.mlane = c.lane
 	return c
 }
 
@@ -244,18 +312,30 @@ func (g *Game) newCar(kind int) *Car {
 	return c
 }
 
+func (g *Game) startEdge(c *Car) {
+	c.mlane = c.lane
+	if g.isMotor(c.a, c.b) && !c.isEV() {
+		if c.kind == kLorry || c.kind == kBus || g.rng.Float64() < 0.55 {
+			c.mlane = motorLaneOff // left (slow) lane
+		}
+	}
+}
+
 func (g *Game) respawnCar(c *Car) {
 	c.chase = false
-	c.crashed, c.ghost, c.wait, c.pull = 0, 0, 0, 0
+	c.crashed, c.broken, c.ghost, c.wait, c.pull = 0, 0, 0, 0, 0
 	for try := 0; try < 80; try++ {
-		i, j := g.rng.Intn(nodesX), g.rng.Intn(nodesY)
-		ni, nj := g.pickNext(i, j, -1, -1)
-		if g.edgeBlocked(i, j, ni, nj) {
+		a := g.rng.Intn(len(g.nodes))
+		b := g.pickNext(a, -1)
+		if g.edgeBlocked(a, b) {
 			continue
 		}
-		c.ai, c.aj, c.bi, c.bj = i, j, ni, nj
+		c.a, c.b = a, b
 		c.inTurn = false
-		c.t = 20 + g.rng.Float64()*(edgeLen-140)
+		g.startEdge(c)
+		L := g.edgeLen(a, b)
+		c.t = 20 + g.rng.Float64()*(L-140)
+		c.off = g.laneTarget(c)
 		g.carPose(c)
 		if try < 60 && (math.Abs(c.x-g.truck.X) < 900 && math.Abs(c.y-g.truck.Y) < 600) {
 			continue
@@ -267,54 +347,53 @@ func (g *Game) respawnCar(c *Car) {
 				break
 			}
 		}
-		if !ok {
-			continue
+		if ok {
+			break
 		}
-		break
 	}
 	g.setNext(c)
 	c.speed = g.carLimit(c) * 0.7
 	g.carPose(c)
 }
 
-func (g *Game) pickNext(i, j, pi, pj int) (int, int) {
-	var opts [][2]int
-	back := [2]int{-1, -1}
-	for _, d := range [][2]int{{1, 0}, {-1, 0}, {0, 1}, {0, -1}} {
-		ni, nj := i+d[0], j+d[1]
-		if ni < 0 || nj < 0 || ni >= nodesX || nj >= nodesY {
+func (g *Game) pickNext(at, prev int) int {
+	var opts []int
+	back := -1
+	for _, nb := range g.nodes[at].Nb {
+		if nb == prev {
+			back = nb
 			continue
 		}
-		if ni == pi && nj == pj {
-			back = [2]int{ni, nj}
+		if g.edgeBlocked(at, nb) {
 			continue
 		}
-		if g.edgeBlocked(i, j, ni, nj) {
-			continue
-		}
-		opts = append(opts, [2]int{ni, nj})
+		opts = append(opts, nb)
 	}
 	if len(opts) == 0 {
-		if back[0] >= 0 {
-			return back[0], back[1]
+		if back >= 0 {
+			return back
 		}
-		return pi, pj
+		return g.nodes[at].Nb[0]
 	}
-	o := opts[g.rng.Intn(len(opts))]
-	return o[0], o[1]
+	for _, o := range opts {
+		if g.isMotor(at, o) && g.rng.Float64() < 0.5 {
+			return o
+		}
+	}
+	return opts[g.rng.Intn(len(opts))]
 }
 
 func (g *Game) setNext(c *Car) {
-	c.ni, c.nj = g.pickNext(c.bi, c.bj, c.ai, c.aj)
-	dx, dy := float64(c.bi-c.ai), float64(c.bj-c.aj)
-	ex, ey := float64(c.ni-c.bi), float64(c.nj-c.bj)
+	c.n = g.pickNext(c.b, c.a)
+	dx, dy := g.edgeDir(c.a, c.b)
+	ex, ey := g.edgeDir(c.b, c.n)
 	cr := dx*ey - dy*ex
 	switch {
-	case cr > 0:
+	case cr > 0.5:
 		c.turnSign = 1
-	case cr < 0:
+	case cr < -0.5:
 		c.turnSign = -1
-	case dx == -ex && dy == -ey:
+	case dx*ex+dy*ey < -0.5:
 		c.turnSign = 1
 	default:
 		c.turnSign = 0
@@ -322,24 +401,54 @@ func (g *Game) setNext(c *Car) {
 }
 
 func (g *Game) carLimit(c *Car) float64 {
-	return edgeLimitMph(c.ai, c.aj, c.bi, c.bj) / mphK * c.factor
+	lim := g.edgeLimitMph(c.a, c.b)
+	if c.kind == kLorry || c.kind == kBus {
+		lim = math.Min(lim, 56)
+	}
+	return lim / mphK * c.factor
+}
+
+func smooth01(v float64) float64 {
+	v = math.Max(0, math.Min(1, v))
+	return v * v * (3 - 2*v)
+}
+
+// laneTarget is the lateral offset the car wants right now.
+func (g *Game) laneTarget(c *Car) float64 {
+	off := c.lane
+	L := g.edgeLen(c.a, c.b)
+	if c.mlane != c.lane {
+		k := smooth01(math.Min(c.t, L-c.t) / 600)
+		off = c.lane + (c.mlane-c.lane)*k
+	}
+	if c.broken > 0 {
+		off = 160
+	}
+	if w := g.laneWorks(c.a, c.b); w != nil && c.a == w.a {
+		// closed lane: swing over to the other side through the works
+		d := math.Abs(c.t - L/2)
+		k := smooth01((zoneHalf + 60 - d) / 50)
+		off = off + (-laneOff-off)*k
+	}
+	return off + 24*c.pull
 }
 
 func (g *Game) startTurn(c *Car) {
-	bx, by := nodePos(c.bi, c.bj)
-	dx, dy := float64(c.bi-c.ai), float64(c.bj-c.aj)
-	ex, ey := float64(c.ni-c.bi), float64(c.nj-c.bj)
+	B := g.nodes[c.b]
+	dx, dy := g.edgeDir(c.a, c.b)
+	ex, ey := g.edgeDir(c.b, c.n)
 	lx, ly := dy, -dx
 	mx, my := ey, -ex
 	off := c.lane
-	c.p0x, c.p0y = bx-dx*64+lx*off, by-dy*64+ly*off
-	c.p2x, c.p2y = bx+ex*64+mx*off, by+ey*64+my*off
-	if dx == ex && dy == ey {
+	c.p0x, c.p0y = B.X-dx*64+lx*off, B.Y-dy*64+ly*off
+	c.p2x, c.p2y = B.X+ex*64+mx*off, B.Y+ey*64+my*off
+	switch {
+	case dx*ex+dy*ey > 0.5:
 		c.p1x, c.p1y = (c.p0x+c.p2x)/2, (c.p0y+c.p2y)/2
-	} else if dx == -ex && dy == -ey {
-		c.p1x, c.p1y = bx+dx*30, by+dy*30
-	} else {
-		c.p1x, c.p1y = bx+lx*off+mx*off, by+ly*off+my*off
+	case dx*ex+dy*ey < -0.5:
+		c.p1x, c.p1y = B.X+dx*30, B.Y+dy*30
+	default:
+		c.p1x, c.p1y = B.X+lx*off+mx*off, B.Y+ly*off+my*off
 	}
 	l := 0.0
 	px, py := c.p0x, c.p0y
@@ -362,12 +471,11 @@ func (g *Game) carPose(c *Car) {
 		return
 	}
 	if !c.inTurn {
-		ax, ay := nodePos(c.ai, c.aj)
-		dx, dy := float64(c.bi-c.ai), float64(c.bj-c.aj)
+		A := g.nodes[c.a]
+		dx, dy := g.edgeDir(c.a, c.b)
 		lx, ly := dy, -dx
-		off := c.lane + 24*c.pull
-		c.x = ax + dx*(64+c.t) + lx*off
-		c.y = ay + dy*(64+c.t) + ly*off
+		c.x = A.X + dx*(64+c.t) + lx*c.off
+		c.y = A.Y + dy*(64+c.t) + ly*c.off
 		c.hx, c.hy = dx, dy
 		return
 	}
@@ -401,10 +509,13 @@ func (g *Game) updateCars() {
 		if c.isEV() {
 			c.life -= dt
 			if c.life < 0 && !g.visible(c.x, c.y, 400) {
-				continue // despawn
+				continue
 			}
 		}
 		keep = append(keep, c)
+		if c.hazard > 0 {
+			c.hazard -= dt
+		}
 		if c.chase {
 			g.updateChaser(c)
 			continue
@@ -415,25 +526,37 @@ func (g *Game) updateCars() {
 			c.braking = true
 			continue
 		}
-		if !c.inTurn && g.edgeBlocked(c.bi, c.bj, c.ni, c.nj) {
+		if c.broken > 0 {
+			c.broken -= dt
+			c.speed = math.Max(0, c.speed-400*dt)
+			c.off += (g.laneTarget(c) - c.off) * math.Min(1, dt*1.5)
+			if c.speed > 0 {
+				c.t += c.speed * dt
+			}
+			g.carPose(c)
+			continue
+		}
+		if !c.inTurn && g.edgeBlocked(c.b, c.n) {
 			g.setNext(c)
 		}
-		limit := g.carLimit(c)
-		desired := limit
-		if c.inTurn {
-			ts := 105.0
-			if c.turnSign < 0 {
-				ts = 85
-			}
+		L := g.edgeLen(c.a, c.b)
+		motor := g.isMotor(c.a, c.b) && !c.inTurn
+		desired := g.carLimit(c)
+		turnSpeed := func() float64 {
 			if c.isEV() {
-				ts = 150
+				return 150
 			}
-			desired = math.Min(desired, ts)
+			if c.turnSign < 0 {
+				return 85
+			}
+			return 105
+		}
+		if c.inTurn {
+			desired = math.Min(desired, turnSpeed())
 		}
 		rx, ry := -c.hy, c.hx
 		var blocker *Car
 
-		// pull over for emergency vehicles
 		c.pulling = false
 		if !c.isEV() && !c.inTurn {
 			for _, e := range evs {
@@ -469,16 +592,20 @@ func (g *Game) updateCars() {
 					continue
 				}
 				ox, oy := o.x-c.x, o.y-c.y
-				if math.Abs(ox) > 200 || math.Abs(oy) > 200 {
+				if math.Abs(ox) > 260 || math.Abs(oy) > 260 {
 					continue
 				}
 				along := ox*c.hx + oy*c.hy
 				lat := ox*rx + oy*ry
 				latLim := 16.0
-				if o.pull > 0.5 && !c.inTurn {
+				if (o.pull > 0.5 || o.broken > 0) && !c.inTurn {
 					latLim = 6
 				}
-				if along > 0 && along < 170 && math.Abs(lat) < latLim {
+				look := 170.0
+				if motor {
+					look = 240
+				}
+				if along > 0 && along < look && math.Abs(lat) < latLim {
 					s := follow(along - c.half - o.half - 10)
 					if s < desired {
 						desired = s
@@ -505,7 +632,7 @@ func (g *Game) updateCars() {
 			ox, oy := p[0]-c.x, p[1]-c.y
 			along := ox*c.hx + oy*c.hy
 			lat := ox*rx + oy*ry
-			if along > 0 && along < 170 && math.Abs(lat) < 30 {
+			if along > 0 && along < 200 && math.Abs(lat) < 30 {
 				s := follow(along - c.half - 17 - 10)
 				if s < desired {
 					desired = s
@@ -518,18 +645,29 @@ func (g *Game) updateCars() {
 			g.evBlockedTime += dt
 		}
 		if !c.inTurn {
-			stopT := edgeLen - 28 - c.half
+			// temporary lights at lane-closure roadworks
+			if w := g.laneWorks(c.a, c.b); w != nil && !c.isEV() {
+				stop := math.Max(0, L/2-zoneHalf-100-c.half)
+				dist := stop - c.t
+				if dist > -2 && g.tempLight(w, c.a, c.b) != 0 {
+					st := g.tempLight(w, c.a, c.b)
+					bd := c.speed * c.speed / (2 * 600)
+					if !(st == 1 && dist < bd*0.7) {
+						desired = math.Min(desired, follow(dist))
+					}
+				}
+			}
+			stopT := L - 28 - c.half
 			dist := stopT - c.t
 			axis := 0
-			if c.bi == c.ai {
+			if g.nodes[c.a].J != g.nodes[c.b].J {
 				axis = 1
 			}
-			st := g.light(c.bi, c.bj, axis)
+			st := g.light(c.b, axis)
 			if !c.isEV() && st == 0 {
-				// hold back at the stop line if an emergency vehicle is about to cross the junction
-				bx, by := nodePos(c.bi, c.bj)
+				B := g.nodes[c.b]
 				for _, e := range evs {
-					if math.Hypot(e.x-bx, e.y-by) < 230 && dist > -2 {
+					if math.Hypot(e.x-B.X, e.y-B.Y) < 230 && dist > -2 {
 						st = 2
 					}
 				}
@@ -545,23 +683,23 @@ func (g *Game) updateCars() {
 				}
 			}
 			if c.turnSign != 0 {
-				ts := 105.0
-				if c.turnSign < 0 {
-					ts = 85
-				}
-				if c.isEV() {
-					ts = 150
-				}
-				desired = math.Min(desired, math.Sqrt(ts*ts+2*350*math.Max(0, edgeLen-c.t)))
+				ts := turnSpeed()
+				desired = math.Min(desired, math.Sqrt(ts*ts+2*350*math.Max(0, L-c.t)))
 			}
 		}
+		prev := c.speed
 		c.braking = desired < c.speed-2 || c.speed < 2
 		if c.speed > desired {
 			c.speed = math.Max(desired, c.speed-1000*dt)
 		} else {
 			c.speed = math.Min(desired, c.speed+150*dt)
 		}
-		if c.speed < 3 && blocker != nil && (c.inTurn || blocker.inTurn) {
+		// hazard warning lights when braking hard on the motorway
+		if motor && prev-c.speed > 700*dt && prev > 250 {
+			c.hazard = 3
+		}
+		headOn := blocker != nil && blocker.hx*c.hx+blocker.hy*c.hy < -0.5
+		if c.speed < 3 && blocker != nil && (c.inTurn || blocker.inTurn || headOn) {
 			c.wait += dt
 			if c.wait > 2.5 {
 				c.ghost = 1.5
@@ -571,24 +709,67 @@ func (g *Game) updateCars() {
 			c.wait = 0
 		}
 		c.t += c.speed * dt
-		if !c.inTurn && c.t >= edgeLen {
-			c.t -= edgeLen
+		if !c.inTurn {
+			c.off += (g.laneTarget(c) - c.off) * math.Min(1, dt*3)
+		}
+		if !c.inTurn && c.t >= L {
+			c.t -= L
 			g.startTurn(c)
 		}
 		if c.inTurn && c.t >= c.turnLen {
 			c.t -= c.turnLen
-			c.ai, c.aj, c.bi, c.bj = c.bi, c.bj, c.ni, c.nj
+			c.a, c.b = c.b, c.n
 			c.inTurn = false
+			g.startEdge(c)
+			c.off = c.lane
 			g.setNext(c)
 		}
 		g.carPose(c)
 	}
 	g.cars = keep
 
+	// keep the M11 busy: move an off-screen city car onto the motorway when it gets quiet
+	g.motorCheck -= dt
+	if g.motorCheck <= 0 {
+		g.motorCheck = 1.5
+		n := 0
+		for _, c := range g.cars {
+			if g.isMotor(c.a, c.b) {
+				n++
+			}
+		}
+		if n < 16 {
+			for _, c := range g.cars {
+				if c.isEV() || c.chase || c.kind == kPolice || g.isMotor(c.a, c.b) || g.visible(c.x, c.y, 300) {
+					continue
+				}
+				c.a, c.b = g.motorA, g.motorB
+				if g.rng.Intn(2) == 0 {
+					c.a, c.b = g.motorB, g.motorA
+				}
+				c.inTurn = false
+				c.crashed, c.broken, c.pull = 0, 0, 0
+				g.startEdge(c)
+				L := g.edgeLen(c.a, c.b)
+				for try := 0; try < 20; try++ {
+					c.t = 900 + g.rng.Float64()*(L-1800)
+					c.off = g.laneTarget(c)
+					g.carPose(c)
+					if !g.visible(c.x, c.y, 400) {
+						break
+					}
+				}
+				g.setNext(c)
+				c.speed = g.carLimit(c)
+				break
+			}
+		}
+	}
+
 	g.nextEV -= dt
 	if g.nextEV <= 0 {
 		g.nextEV = 30 + g.rng.Float64()*40
-		kinds := []int{evAmbulance, evFire, evPolice}
+		kinds := []int{kAmbulance, kFire, kPoliceEV}
 		g.dispatchEV(kinds[g.rng.Intn(len(kinds))])
 	}
 }
@@ -603,18 +784,19 @@ func (g *Game) dispatchEV(kind int) {
 	if n >= 3 {
 		return
 	}
-	// spawn somewhere nearish to the player so they actually meet it
 	c := g.makeCar(kind)
 	c.life = 45
 	for try := 0; try < 80; try++ {
-		i, j := g.rng.Intn(nodesX), g.rng.Intn(nodesY)
-		ni, nj := g.pickNext(i, j, -1, -1)
-		if g.edgeBlocked(i, j, ni, nj) {
+		a := g.rng.Intn(len(g.nodes))
+		b := g.pickNext(a, -1)
+		if g.edgeBlocked(a, b) {
 			continue
 		}
-		c.ai, c.aj, c.bi, c.bj = i, j, ni, nj
+		c.a, c.b = a, b
 		c.t = 10
 		c.inTurn = false
+		g.startEdge(c)
+		c.off = c.lane
 		g.carPose(c)
 		d := math.Hypot(c.x-g.truck.X, c.y-g.truck.Y)
 		if (d > 750 && d < 1500) || try > 70 {
@@ -650,7 +832,7 @@ func (g *Game) startChase(reason string, amount, pts int) {
 		}
 	}
 	if best == nil || bestD > 140 {
-		// fall back to a police car right near the truck
+		best = nil
 		for _, c := range g.cars {
 			if c.kind == kPolice && c.crashed <= 0 && math.Hypot(c.x-g.truck.X, c.y-g.truck.Y) < 200 {
 				best, bestIdx = c, len(g.trail)-1
@@ -671,9 +853,8 @@ func (g *Game) startChase(reason string, amount, pts int) {
 }
 
 func (g *Game) updateChaser(c *Car) {
-	// follow the breadcrumb trail the truck left
 	td := math.Hypot(g.truck.X-c.x, g.truck.Y-c.y)
-	target := math.Min(560, math.Abs(g.truck.Speed)+150)
+	target := math.Min(600, math.Abs(g.truck.Speed)+150)
 	if td < 130 {
 		target = 0
 	} else if td < 200 {
@@ -724,7 +905,7 @@ func makeCarImg(w, h int, c color.RGBA, style int) *ebiten.Image {
 	fillRect(img, 2, 2, fw-4, fh-4, c)
 	glass := rgb(140, 190, 220)
 	switch style {
-	case 0, 3: // car / police
+	case 0, 3:
 		fillRect(img, fw-16, 3, 7, fh-6, glass)
 		fillRect(img, 6, 4, 5, fh-8, rgb(120, 160, 190))
 		if style == 3 {
@@ -738,16 +919,16 @@ func makeCarImg(w, h int, c color.RGBA, style int) *ebiten.Image {
 			}
 			fillRect(img, fw/2-3, 3, 6, fh-6, rgb(40, 40, 60))
 		}
-	case 1: // van
+	case 1:
 		fillRect(img, fw-12, 3, 6, fh-6, glass)
 		fillRect(img, 4, 4, fw-20, fh-8, rgb(220, 220, 220))
-	case 2: // bus
+	case 2:
 		fillRect(img, fw-6, 3, 4, fh-6, glass)
 		for x := 6.0; x < fw-12; x += 12 {
 			fillRect(img, x, 3, 8, 3, glass)
 			fillRect(img, x, fh-6, 8, 3, glass)
 		}
-	case 4: // ambulance
+	case 4:
 		fillRect(img, fw-12, 3, 6, fh-6, glass)
 		for x := 2.0; x < fw-14; x += 8 {
 			if int(x/8)%2 == 0 {
@@ -757,7 +938,7 @@ func makeCarImg(w, h int, c color.RGBA, style int) *ebiten.Image {
 		}
 		fillRect(img, fw/2-8, fh/2-2, 16, 4, rgb(30, 160, 60))
 		fillRect(img, fw/2-2, fh/2-8, 4, 16, rgb(30, 160, 60))
-	case 5: // fire engine
+	case 5:
 		fillRect(img, fw-12, 3, 6, fh-6, glass)
 		fillRect(img, 6, fh/2-4, fw-24, 8, rgb(200, 200, 200))
 		for x := 8.0; x < fw-24; x += 8 {
@@ -778,73 +959,96 @@ func drawRot(dst, img *ebiten.Image, x, y, a float64) {
 	dst.DrawImage(img, op)
 }
 
+// drawLamps draws indicator / hazard / brake lamps for a vehicle at screen pos sx,sy.
+// ind: 0 none, -1 left, 1 right, 2 hazards.
+func (g *Game) drawLamps(screen *ebiten.Image, sx, sy, hx, hy, half, width float64, ind int, braking bool) {
+	rx, ry := -hy, hx
+	hw := width/2 - 2
+	at := func(along, side float64) (float64, float64) {
+		return sx + hx*along + rx*side, sy + hy*along + ry*side
+	}
+	amber := rgb(255, 170, 0)
+	side := func(s float64) {
+		x1, y1 := at(half-2, s*hw)
+		x2, y2 := at(-half+2, s*hw)
+		fillCircle(screen, x1, y1, 3.5, amber)
+		fillCircle(screen, x2, y2, 3.5, amber)
+		fillCircle(screen, x1, y1, 8, color.NRGBA{255, 170, 0, 70})
+		fillCircle(screen, x2, y2, 8, color.NRGBA{255, 170, 0, 70})
+	}
+	if math.Mod(g.clock, 0.7) < 0.35 {
+		switch ind {
+		case 2:
+			side(1)
+			side(-1)
+		case -1, 1:
+			side(float64(ind))
+		}
+	}
+	if braking {
+		x1, y1 := at(-half+1, hw-1)
+		x2, y2 := at(-half+1, -hw+1)
+		fillCircle(screen, x1, y1, 2.5, rgb(255, 30, 30))
+		fillCircle(screen, x2, y2, 2.5, rgb(255, 30, 30))
+	}
+}
+
 func (g *Game) drawCar(screen *ebiten.Image, c *Car, cx, cy float64) {
 	sx, sy := c.x-cx, c.y-cy
 	if sx < -100 || sy < -100 || sx > screenW+100 || sy > screenH+100 {
 		return
 	}
 	drawRot(screen, c.img, sx, sy, c.angle())
-	rx, ry := -c.hy, c.hx
-	hw := c.width/2 - 2
-	at := func(along, side float64) (float64, float64) {
-		return sx + c.hx*along + rx*side, sy + c.hy*along + ry*side
+	ind := 0
+	switch {
+	case c.crashed > 0 || c.broken > 0 || c.hazard > 0:
+		ind = 2
+	case c.pulling || (c.pull > 0.05 && !c.isEV()):
+		ind = -1
+	case c.turnSign != 0 && !c.chase && (c.inTurn || c.t > g.edgeLen(c.a, c.b)-170):
+		ind = c.turnSign
 	}
-	blink := math.Mod(g.clock, 0.7) < 0.35
-	amber := rgb(255, 170, 0)
-	ind := func(side float64) {
-		x1, y1 := at(c.half-2, side*hw)
-		x2, y2 := at(-c.half+2, side*hw)
-		fillCircle(screen, x1, y1, 3.5, amber)
-		fillCircle(screen, x2, y2, 3.5, amber)
-	}
-	if blink {
-		switch {
-		case c.crashed > 0:
-			ind(1)
-			ind(-1)
-		case c.pulling || (c.pull > 0.05 && !c.isEV()):
-			ind(-1)
-		case c.turnSign != 0 && !c.chase && (c.inTurn || c.t > edgeLen-170):
-			ind(float64(c.turnSign))
-		}
-	}
-	if c.braking {
-		x1, y1 := at(-c.half+1, hw-1)
-		x2, y2 := at(-c.half+1, -hw+1)
-		fillCircle(screen, x1, y1, 2.5, rgb(255, 30, 30))
-		fillCircle(screen, x2, y2, 2.5, rgb(255, 30, 30))
-	}
+	g.drawLamps(screen, sx, sy, c.hx, c.hy, c.half, c.width, ind, c.braking)
 	if c.isEV() || c.chase {
+		rx, ry := -c.hy, c.hx
 		ph := math.Mod(g.clock, 0.3) < 0.15
 		b1, b2 := rgb(40, 90, 255), rgb(20, 30, 90)
-		if c.kind == kFire || c.kind == kAmbulance {
-			// blue lights too in the UK
-		}
 		if !ph {
 			b1, b2 = b2, b1
 		}
-		x1, y1 := at(c.half*0.35, 5)
-		x2, y2 := at(c.half*0.35, -5)
+		x1, y1 := sx+c.hx*c.half*0.35+rx*5, sy+c.hy*c.half*0.35+ry*5
+		x2, y2 := sx+c.hx*c.half*0.35-rx*5, sy+c.hy*c.half*0.35-ry*5
 		fillCircle(screen, x1, y1, 4, b1)
 		fillCircle(screen, x2, y2, 4, b2)
 		if ph {
-			fillCircle(screen, x1, y1, 14, color.NRGBA{40, 90, 255, 50})
+			fillCircle(screen, x1, y1, 16, color.NRGBA{40, 90, 255, 60})
 		} else {
-			fillCircle(screen, x2, y2, 14, color.NRGBA{40, 90, 255, 50})
+			fillCircle(screen, x2, y2, 16, color.NRGBA{40, 90, 255, 60})
 		}
 	}
 }
 
+func drawTempLight(screen *ebiten.Image, x, y float64, st int) {
+	fillRect(screen, x-10, y-10, 20, 20, rgb(250, 200, 0))
+	fillRect(screen, x-8, y-8, 16, 16, rgb(25, 25, 25))
+	col := rgb(240, 40, 40)
+	switch st {
+	case 0:
+		col = rgb(40, 230, 90)
+	case 1:
+		col = rgb(255, 180, 0)
+	}
+	fillCircle(screen, x, y, 6, col)
+	fillCircle(screen, x, y, 12, color.NRGBA{col.R, col.G, col.B, 60})
+}
+
 func (g *Game) drawIncident(screen *ebiten.Image, in *Incident, cx, cy float64) {
-	if !g.visible(in.mx, in.my, 200) {
+	if !g.visible(in.mx, in.my, 250) {
 		return
 	}
 	r := rand.New(rand.NewSource(in.seed))
-	// local axes: a = along road, b = across road
-	ax, ay, bx, by := 1.0, 0.0, 0.0, 1.0
-	if !in.horiz {
-		ax, ay, bx, by = 0, 1, 1, 0
-	}
+	ax, ay := g.edgeDir(in.a, in.b) // along a->b
+	bx, by := ay, -ax               // left of a->b (the closed lane side)
 	P := func(a, b float64) (float64, float64) {
 		return in.mx + ax*a + bx*b - cx, in.my + ay*a + by*b - cy
 	}
@@ -853,11 +1057,9 @@ func (g *Game) drawIncident(screen *ebiten.Image, in *Incident, cx, cy float64) 
 		fillCircle(screen, x, y, 6, rgb(255, 110, 0))
 		fillCircle(screen, x, y, 2.5, color.White)
 	}
-	ang := 0.0
-	if !in.horiz {
-		ang = math.Pi / 2
-	}
-	if in.kind == incRTC {
+	ang := math.Atan2(ay, ax)
+	switch in.kind {
+	case incRTC:
 		x, y := P(0, 0)
 		fillCircle(screen, x+8, y+4, 30, color.NRGBA{20, 20, 25, 120})
 		for k := 0; k < 30; k++ {
@@ -870,14 +1072,20 @@ func (g *Game) drawIncident(screen *ebiten.Image, in *Incident, cx, cy float64) 
 		x2, y2 := P(16, -14)
 		drawRot(screen, c1, x1, y1, ang+0.5)
 		drawRot(screen, c2, x2, y2, ang-1.1)
+		// hazards on the crashed cars
+		if math.Mod(g.clock, 0.7) < 0.35 {
+			for _, p := range [][2]float64{{x1, y1}, {x2, y2}} {
+				fillCircle(screen, p[0]-14, p[1]-6, 3.5, rgb(255, 170, 0))
+				fillCircle(screen, p[0]+14, p[1]+6, 3.5, rgb(255, 170, 0))
+			}
+		}
 		px, py := P(48, 34)
 		drawRot(screen, makeCarCached(rgb(245, 245, 245), 3), px, py, ang)
 		ph := math.Mod(g.clock, 0.3) < 0.15
-		col := rgb(40, 90, 255)
 		if ph {
 			fillCircle(screen, px, py, 16, color.NRGBA{40, 90, 255, 60})
 		}
-		fillCircle(screen, px, py, 4, col)
+		fillCircle(screen, px, py, 4, rgb(40, 90, 255))
 		amx, amy := P(-48, -34)
 		drawRot(screen, makeCarCached(rgb(250, 220, 0), 4), amx, amy, ang)
 		if !ph {
@@ -889,38 +1097,79 @@ func (g *Game) drawIncident(screen *ebiten.Image, in *Incident, cx, cy float64) 
 			}
 		}
 		lx, ly := P(0, -50)
-		drawTextShadow(screen, "POLICE - ROAD CLOSED", faceTiny, lx, ly, color.White, 1)
-	} else {
-		x, y := P(0, 0)
-		pw, ph := 70.0, 90.0
-		if !in.horiz {
-			pw, ph = ph, pw
+		drawTextShadow(screen, "POLICE - ROAD CLOSED", faceTiny, lx, ly, color.White, text.AlignCenter)
+	case incWorks, incWorksLight:
+		closedOnly := in.kind == incWorksLight
+		x0, y0, x1, y1 := in.rect()
+		fillRect(screen, x0-cx+6, y0-cy+6, x1-x0-12, y1-y0-12, rgb(110, 85, 60))
+		fillRect(screen, x0-cx+14, y0-cy+14, x1-x0-28, y1-y0-28, rgb(90, 68, 48))
+		bw := 30.0
+		if closedOnly {
+			bw = 32
 		}
-		fillRect(screen, x-pw/2, y-ph/2, pw, ph, rgb(110, 85, 60))
-		fillRect(screen, x-pw/2+8, y-ph/2+8, pw-16, ph-16, rgb(90, 68, 48))
-		dx, dy := P(-20, 30)
-		fillRect(screen, dx-20, dy-13, 40, 26, rgb(240, 190, 20))
-		fillRect(screen, dx-4, dy-10, 14, 20, rgb(60, 60, 60))
-		ex, ey := P(10, 0)
-		strokeLine(screen, dx, dy, ex, ey, 6, rgb(220, 170, 20))
-		fillRect(screen, ex-6, ey-6, 12, 12, rgb(80, 80, 80))
-		for k := 0; k < 3; k++ {
-			wx, wy := P(r.Float64()*80-40, r.Float64()*80-40)
+		dx, dy := P(-25, bw)
+		if !closedOnly {
+			dx, dy = P(-20, 30)
+		}
+		fillRect(screen, dx-14, dy-10, 28, 20, rgb(240, 190, 20))
+		fillRect(screen, dx-4, dy-8, 10, 16, rgb(60, 60, 60))
+		ex, ey := P(10, bw)
+		strokeLine(screen, dx, dy, ex, ey, 5, rgb(220, 170, 20))
+		fillRect(screen, ex-5, ey-5, 10, 10, rgb(80, 80, 80))
+		for k := 0; k < 2; k++ {
+			wx, wy := P(r.Float64()*80-40, bw+r.Float64()*20-10)
 			fillCircle(screen, wx, wy, 7, rgb(255, 120, 0))
 			fillCircle(screen, wx, wy, 4, color.White)
 		}
-		for _, end := range []float64{-70, 70} {
-			for b := -62.0; b < 62; b += 12 {
-				bx1, by1 := P(end, b)
-				col := rgb(220, 30, 30)
-				if int((b+62)/12)%2 == 0 {
-					col = color.RGBA{240, 240, 240, 255}
-				}
-				fillRect(screen, bx1-4, by1-4, 8, 12, col)
+		if closedOnly {
+			// cones along the centre line + temporary traffic lights at both ends
+			for a := -zoneHalf - 30; a <= zoneHalf+30; a += 16 {
+				cone(a, 2)
 			}
+			for _, end := range []float64{-zoneHalf, zoneHalf} {
+				for b := 6.0; b < 62; b += 12 {
+					bx1, by1 := P(end, b)
+					col := rgb(220, 30, 30)
+					if int(b/12)%2 == 0 {
+						col = rgb(240, 240, 240)
+					}
+					fillRect(screen, bx1-4, by1-4, 8, 8, col)
+				}
+			}
+			L := g.edgeLen(in.a, in.b)
+			_ = L
+			// light for a->b traffic (before the works on its left side)
+			lx, ly := P(-zoneHalf-100, 78)
+			drawTempLight(screen, lx, ly, g.tempLight(in, in.a, in.b))
+			// light for b->a traffic (approaching from the other end, their left = our right)
+			lx2, ly2 := P(zoneHalf+100, -78)
+			drawTempLight(screen, lx2, ly2, g.tempLight(in, in.b, in.a))
+			// temporary stop lines
+			s1x, s1y := P(-zoneHalf-100, 32)
+			s2x, s2y := P(zoneHalf+100, -32)
+			if in.horiz {
+				fillRect(screen, s1x-2, s1y-30, 4, 60, color.White)
+				fillRect(screen, s2x-2, s2y-30, 4, 60, color.White)
+			} else {
+				fillRect(screen, s1x-30, s1y-2, 60, 4, color.White)
+				fillRect(screen, s2x-30, s2y-2, 60, 4, color.White)
+			}
+			tx, ty := P(0, 80)
+			drawTextShadow(screen, "ROAD WORKS - TEMPORARY LIGHTS", faceTiny, tx, ty, rgb(255, 210, 60), text.AlignCenter)
+		} else {
+			for _, end := range []float64{-70, 70} {
+				for b := -62.0; b < 62; b += 12 {
+					bx1, by1 := P(end, b)
+					col := rgb(220, 30, 30)
+					if int((b+62)/12)%2 == 0 {
+						col = rgb(240, 240, 240)
+					}
+					fillRect(screen, bx1-4, by1-4, 8, 12, col)
+				}
+			}
+			lx, ly := P(0, -50)
+			drawTextShadow(screen, "ROAD WORKS - ROAD CLOSED", faceTiny, lx, ly, rgb(255, 210, 60), text.AlignCenter)
 		}
-		lx, ly := P(0, -50)
-		drawTextShadow(screen, "ROAD WORKS - ROAD CLOSED", faceTiny, lx, ly, rgb(255, 210, 60), 1)
 	}
 }
 
@@ -944,41 +1193,34 @@ func makeCarCached(c color.RGBA, style int) *ebiten.Image {
 }
 
 func (g *Game) drawLights(screen *ebiten.Image, cx, cy float64) {
-	for i := 0; i < nodesX; i++ {
-		for j := 0; j < nodesY; j++ {
-			nx, ny := nodePos(i, j)
-			if !g.visible(nx, ny, 150) {
-				continue
+	for id, n := range g.nodes {
+		if !g.visible(n.X, n.Y, 150) {
+			continue
+		}
+		for _, from := range n.Nb {
+			dx, dy := g.edgeDir(from, id)
+			lx, ly := dy, -dx
+			px := n.X - dx*(64+26) + lx*(64+14) - cx
+			py := n.Y - dy*(64+26) + ly*(64+14) - cy
+			axis := 0
+			if math.Abs(dy) > 0.5 {
+				axis = 1
 			}
-			for _, d := range [][2]int{{1, 0}, {-1, 0}, {0, 1}, {0, -1}} {
-				fi, fj := i-d[0], j-d[1] // approaching from neighbour
-				if fi < 0 || fj < 0 || fi >= nodesX || fj >= nodesY {
-					continue
-				}
-				dx, dy := float64(d[0]), float64(d[1])
-				lx, ly := dy, -dx
-				px := nx - dx*(64+26) + lx*(64+14) - cx
-				py := ny - dy*(64+26) + ly*(64+14) - cy
-				axis := 0
-				if d[0] == 0 {
-					axis = 1
-				}
-				st := g.light(i, j, axis)
-				fillRect(screen, px-9, py-9, 18, 18, rgb(25, 25, 25))
-				var col color.RGBA
-				switch st {
-				case 0:
-					col = rgb(40, 230, 90)
-				case 1:
-					col = rgb(255, 180, 0)
-				default:
-					col = rgb(240, 40, 40)
-				}
-				fillCircle(screen, px, py, 6, col)
-				fillCircle(screen, px, py, 11, color.NRGBA{col.R, col.G, col.B, 45})
-				if st == 3 {
-					fillCircle(screen, px+5, py+5, 3, rgb(255, 180, 0))
-				}
+			st := g.light(id, axis)
+			fillRect(screen, px-9, py-9, 18, 18, rgb(25, 25, 25))
+			var col color.RGBA
+			switch st {
+			case 0:
+				col = rgb(40, 230, 90)
+			case 1:
+				col = rgb(255, 180, 0)
+			default:
+				col = rgb(240, 40, 40)
+			}
+			fillCircle(screen, px, py, 6, col)
+			fillCircle(screen, px, py, 11, color.NRGBA{col.R, col.G, col.B, 45})
+			if st == 3 {
+				fillCircle(screen, px+5, py+5, 3, rgb(255, 180, 0))
 			}
 		}
 	}

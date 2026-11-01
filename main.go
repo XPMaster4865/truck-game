@@ -28,17 +28,33 @@ const (
 )
 
 type Game struct {
-	state     int
-	tiles     [mapW][mapH]TileKind
-	layout    [blocksX][blocksY]int
-	buildings []Rect
-	cameras   []*Camera
-	lightOff  [nodesX][nodesY]float64
-	chunks    [][]*ebiten.Image
-	bigMap    *ebiten.Image
-	bms       float64
-	mini      *ebiten.Image
-	truckImgs map[[3]int]*ebiten.Image
+	state         int
+	tiles         [mapW][mapH]TileKind
+	tileCity      [mapW][mapH]int8
+	yardOf        [mapW][mapH]int16
+	nodes         []Node
+	motorA        int
+	motorB        int
+	buildings     []Rect
+	cameras       []*Camera
+	chunkCache    map[[2]int]*ebiten.Image
+	chunkUsed     map[[2]int]int64
+	frameNo       int64
+	nextBreakdown float64
+	town          string
+	ind           int
+	indAngle      float64
+	wrongPump     string
+	hasSave       bool
+	saveTimer     float64
+	mapPan        float64
+	sound         *Sound
+	noSave        bool
+	motorCheck    float64
+	bigMap        *ebiten.Image
+	bms           float64
+	mini          *ebiten.Image
+	truckImgs     map[[3]int]*ebiten.Image
 
 	truck              Truck
 	prevX, prevY       float64
@@ -117,6 +133,7 @@ func NewGame() *Game {
 	g := &Game{rng: rand.New(rand.NewSource(42)), truckImgs: map[[3]int]*ebiten.Image{}}
 	g.generate()
 	g.reset()
+	g.hasSave = saveExists()
 	return g
 }
 
@@ -148,18 +165,43 @@ func (g *Game) reset() {
 	g.makeOffers()
 	g.cars = nil
 	g.camX, g.camY = g.truck.X-screenW/2, g.truck.Y-screenH/2
-	for n := 0; n < 70; n++ {
+	for n := 0; n < 95; n++ {
 		k := kCar
 		switch r := g.rng.Float64(); {
 		case r < 0.06:
 			k = kBus
-		case r < 0.22:
+		case r < 0.20:
 			k = kVan
-		case r < 0.28:
+		case r < 0.27:
+			k = kLorry
+		case r < 0.33:
 			k = kPolice
 		}
 		g.cars = append(g.cars, g.newCar(k))
 	}
+	// some traffic already on the motorway
+	for n := 0; n < 16; n++ {
+		k := kCar
+		if n%3 == 0 {
+			k = kLorry
+		}
+		c := g.makeCar(k)
+		if n%2 == 0 {
+			c.a, c.b = g.motorA, g.motorB
+		} else {
+			c.a, c.b = g.motorB, g.motorA
+		}
+		g.startEdge(c)
+		c.t = 900 + float64(n/2)*1600 + g.rng.Float64()*300
+		c.off = g.laneTarget(c)
+		c.inTurn = false
+		g.setNext(c)
+		c.speed = g.carLimit(c)
+		g.carPose(c)
+		g.cars = append(g.cars, c)
+	}
+	g.ind = 0
+	g.nextBreakdown = 15
 	g.msgTimer, g.fineTimer, g.newsTimer = 0, 0, 0
 	g.shopShown = true
 }
@@ -230,9 +272,10 @@ func pounds(n int) string {
 // ---------- update ----------
 
 func (g *Game) Update() error {
-	if g.chunks == nil {
+	if g.chunkCache == nil {
 		g.buildWorld()
 	}
+	g.frameNo++
 	if inpututil.IsKeyJustPressed(ebiten.KeyF) || inpututil.IsKeyJustPressed(ebiten.KeyF11) {
 		ebiten.SetFullscreen(!ebiten.IsFullscreen())
 	}
@@ -242,18 +285,33 @@ func (g *Game) Update() error {
 		g.updateCars()
 		g.camX = worldW/2 - screenW/2 + math.Sin(g.clock*0.08)*1800
 		g.camY = worldH/2 - screenH/2 + math.Sin(g.clock*0.06)*1200
+		if g.sound == nil && !g.noSave {
+			g.sound = newSound()
+		}
 		if inpututil.IsKeyJustPressed(ebiten.KeyEnter) || inpututil.IsKeyJustPressed(ebiten.KeySpace) {
-			g.reset()
+			if !g.hasSave || !g.load() {
+				g.reset()
+			} else {
+				g.flash("Welcome back! Save loaded.")
+			}
 			g.state = stPlay
 		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyN) {
+			g.reset()
+			g.save()
+			g.state = stPlay
+		}
+		g.updateSound()
 		return nil
 	case stPause:
 		if inpututil.IsKeyJustPressed(ebiten.KeyP) || inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
 			g.state = stPlay
 		}
 		if inpututil.IsKeyJustPressed(ebiten.KeyQ) {
+			g.save()
 			g.state = stTitle
 		}
+		g.updateSound()
 		return nil
 	case stMap:
 		if inpututil.IsKeyJustPressed(ebiten.KeyM) || inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
@@ -264,6 +322,11 @@ func (g *Game) Update() error {
 		g.updateShop()
 		return nil
 	case stGameOver:
+		if g.hasSave {
+			deleteSave()
+			g.hasSave = false
+		}
+		g.updateSound()
 		if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
 			g.state = stTitle
 		}
@@ -304,6 +367,12 @@ func (g *Game) Update() error {
 	g.camX += (tx - g.camX) * math.Min(1, dt*5)
 	g.camY += (ty - g.camY) * math.Min(1, dt*5)
 	g.shake *= 0.9
+	g.saveTimer += dt
+	if g.saveTimer > 30 {
+		g.saveTimer = 0
+		g.save()
+	}
+	g.updateSound()
 	return nil
 }
 
@@ -311,7 +380,7 @@ func (g *Game) Update() error {
 
 func (g *Game) Draw(screen *ebiten.Image) {
 	screen.Fill(rgb(80, 130, 60))
-	if g.chunks == nil {
+	if g.chunkCache == nil {
 		return
 	}
 	cx := math.Max(-200, math.Min(worldW-screenW+200, g.camX))
@@ -320,15 +389,14 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		cx += (g.rng.Float64()*2 - 1) * g.shake
 		cy += (g.rng.Float64()*2 - 1) * g.shake
 	}
-	for i := range g.chunks {
-		for j := range g.chunks[i] {
-			x, y := float64(i*chunkSz)-cx, float64(j*chunkSz)-cy
-			if x > screenW || y > screenH || x+chunkSz < 0 || y+chunkSz < 0 {
+	for i := int(math.Floor(cx / chunkSz)); float64(i*chunkSz) < cx+screenW; i++ {
+		for j := int(math.Floor(cy / chunkSz)); float64(j*chunkSz) < cy+screenH; j++ {
+			if i < 0 || j < 0 || i*chunkSz >= worldW || j*chunkSz >= worldH {
 				continue
 			}
 			op := &ebiten.DrawImageOptions{}
-			op.GeoM.Translate(x, y)
-			screen.DrawImage(g.chunks[i][j], op)
+			op.GeoM.Translate(float64(i*chunkSz)-cx, float64(j*chunkSz)-cy)
+			screen.DrawImage(g.chunk(i, j), op)
 		}
 	}
 	if p := g.target(); p != nil && g.state != stTitle {
@@ -350,6 +418,10 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		return
 	}
 	drawRot(screen, g.truckImg(), g.truck.X-cx, g.truck.Y-cy, g.truck.Angle)
+	{
+		tb := g.truck.Speed > 5 && pressed(ebiten.KeyS, ebiten.KeyArrowDown, ebiten.KeySpace)
+		g.drawLamps(screen, g.truck.X-cx, g.truck.Y-cy, math.Cos(g.truck.Angle), math.Sin(g.truck.Angle), 44, 34, g.ind, tb)
+	}
 
 	if p := g.target(); p != nil {
 		bx, by := p.bayCenter()
@@ -391,13 +463,13 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 func (g *Game) drawControls(screen *ebiten.Image, y float64) {
 	lines := [][2]string{
-		{"W / Up", "Accelerate"}, {"S / Down", "Brake / Reverse"}, {"A D / Left Right", "Steer"},
+		{"W / Up", "Accelerate"}, {"S / Down", "Brake / Reverse"}, {"A D / Left Right", "Steer"}, {"Q / E", "Indicate left / right"}, {"H", "Hazard lights"},
 		{"Space", "Handbrake"}, {"1  2  3", "Choose a job"}, {"M", "City map"},
 		{"C", "Cancel job"}, {"R", "Call recovery (when out of fuel)"}, {"P / Esc", "Pause"}, {"F", "Fullscreen"},
 	}
 	for i, l := range lines {
-		col := float64(i / 5)
-		row := float64(i % 5)
+		col := float64(i / 6)
+		row := float64(i % 6)
 		x := screenW/2 - 420 + col*440
 		drawTextShadow(screen, l[0], faceMed, x, y+row*30, rgb(255, 210, 60), text.AlignStart)
 		drawTextShadow(screen, l[1], faceSmall, x+180, y+row*30+3, color.White, text.AlignStart)
@@ -412,8 +484,13 @@ func (g *Game) drawTitle(screen *ebiten.Image) {
 	drawTextShadow(screen, tips, faceSmall, screenW/2, 225, rgb(200, 220, 255), text.AlignCenter)
 	g.drawControls(screen, 290)
 	if int(g.clock*2)%2 == 0 {
-		drawTextShadow(screen, "Press ENTER to start", faceBig, screenW/2, 570, color.White, text.AlignCenter)
+		if g.hasSave {
+			drawTextShadow(screen, "ENTER = continue saved game      N = new game", faceBig, screenW/2, 570, color.White, text.AlignCenter)
+		} else {
+			drawTextShadow(screen, "Press ENTER to start", faceBig, screenW/2, 570, color.White, text.AlignCenter)
+		}
 	}
+	drawText(screen, "London  ->  M11  ->  Cambridge", faceMed, screenW/2, 630, rgb(150, 190, 255), text.AlignCenter)
 }
 
 // ---------- HUD ----------
@@ -496,7 +573,12 @@ func (g *Game) drawHUD(screen *ebiten.Image) {
 	}
 	if g.fuelling {
 		panel(screen, screenW/2-150, screenH/2+80, 300, 50)
-		drawText(screen, fmt.Sprintf("Refuelling...  %.0f / %.0f L", g.fuel[g.cur], m.Tank), faceSmall, screenW/2, screenH/2+84, white, text.AlignCenter)
+		if m.Electric {
+			left := (m.Tank - g.fuel[g.cur]) / (m.Tank / 120)
+			drawText(screen, fmt.Sprintf("Charging...  %.0f%%   (%d:%02d to full)", 100*g.fuel[g.cur]/m.Tank, int(left)/60, int(left)%60), faceSmall, screenW/2, screenH/2+84, white, text.AlignCenter)
+		} else {
+			drawText(screen, fmt.Sprintf("Refuelling...  %.0f / %.0f L", g.fuel[g.cur], m.Tank), faceSmall, screenW/2, screenH/2+84, white, text.AlignCenter)
+		}
 		fillRect(screen, screenW/2-135, screenH/2+108, 270*g.fuel[g.cur]/m.Tank, 12, rgb(250, 180, 40))
 	}
 
@@ -521,9 +603,6 @@ func (g *Game) drawHUD(screen *ebiten.Image) {
 	if g.chaser != nil {
 		warn(fmt.Sprintf("POLICE - PULL OVER AND STOP! (%ds)", int(30-g.chaseTime)), rgb(90, 150, 255))
 	}
-	if g.evBehind {
-		warn("EMERGENCY VEHICLE BEHIND - SLOW DOWN & LET IT PASS", rgb(90, 150, 255))
-	}
 	if g.wrongTimer > 0.4 {
 		warn("WRONG SIDE OF THE ROAD - KEEP LEFT!", rgb(255, 90, 90))
 	}
@@ -531,9 +610,17 @@ func (g *Game) drawHUD(screen *ebiten.Image) {
 		warn("GET OFF THE PAVEMENT!", rgb(255, 90, 90))
 	}
 	if g.fuel[g.cur] <= 0 {
-		warn("OUT OF FUEL!  Press R to call recovery (£300)", rgb(255, 180, 40))
+		if m.Electric {
+			warn("BATTERY FLAT!  Press R to call recovery (£300)", rgb(255, 180, 40))
+		} else {
+			warn("OUT OF FUEL!  Press R to call recovery (£300)", rgb(255, 180, 40))
+		}
 	} else if g.fuel[g.cur] < m.Tank*0.15 {
-		drawTextShadow(screen, "Low fuel - find a fuel station (PB, Crab, Essco, Texacoo)", faceMed, screenW/2, wy, rgb(255, 180, 40), text.AlignCenter)
+		if m.Electric {
+			drawTextShadow(screen, "Low battery - find a charging point (GridSwerve, Ionnity, motorway services)", faceMed, screenW/2, wy, rgb(255, 180, 40), text.AlignCenter)
+		} else {
+			drawTextShadow(screen, "Low fuel - find a fuel station (PB, Crab, Essco, Texacoo, services)", faceMed, screenW/2, wy, rgb(255, 180, 40), text.AlignCenter)
+		}
 	}
 
 	if g.msgTimer > 0 {
@@ -615,8 +702,13 @@ func (g *Game) drawDash(screen *ebiten.Image) {
 	}
 	strokeLine(screen, fx, fy, fx+math.Cos(fa)*(fr-8), fy+math.Sin(fa)*(fr-8), 3, nc)
 	fillCircle(screen, fx, fy, 4, rgb(200, 200, 200))
-	drawText(screen, fmt.Sprintf("%.0f L", g.fuel[g.cur]), faceTiny, fx, fy+12, color.White, text.AlignCenter)
-	drawText(screen, "FUEL", faceSign, fx, fy+30, color.RGBA{180, 180, 180, 255}, text.AlignCenter)
+	if m.Electric {
+		drawText(screen, fmt.Sprintf("%.0f%%", 100*frac), faceTiny, fx, fy+12, color.White, text.AlignCenter)
+		drawText(screen, "BATTERY", faceSign, fx, fy+30, rgb(0, 220, 190), text.AlignCenter)
+	} else {
+		drawText(screen, fmt.Sprintf("%.0f L", g.fuel[g.cur]), faceTiny, fx, fy+12, color.White, text.AlignCenter)
+		drawText(screen, "FUEL", faceSign, fx, fy+30, color.RGBA{180, 180, 180, 255}, text.AlignCenter)
+	}
 
 	// speed limit roundel
 	lx, ly := px+340, py+70
@@ -648,6 +740,8 @@ func (g *Game) mapMarkers(dst *ebiten.Image, ox, oy, s float64, labels bool) {
 		fillRect(dst, mx-sz/2, my-sz/2, sz, sz, p.Color)
 		if p.Fuel > 0 {
 			drawText(dst, "F", faceSign, mx, my-7, color.Black, text.AlignCenter)
+		} else if p.Charge > 0 {
+			drawText(dst, "E", faceSign, mx, my-7, color.Black, text.AlignCenter)
 		}
 		if labels {
 			drawTextShadow(dst, p.Name, faceTiny, mx, my+6, color.White, text.AlignCenter)
@@ -712,18 +806,34 @@ func (g *Game) drawMinimap(screen *ebiten.Image) {
 func (g *Game) drawBigMap(screen *ebiten.Image) {
 	fillRect(screen, 0, 0, screenW, screenH, color.RGBA{0, 0, 0, 200})
 	bw, bh := float64(g.bigMap.Bounds().Dx()), float64(g.bigMap.Bounds().Dy())
-	ox, oy := (screenW-bw)/2, (screenH-bh)/2+20
+	s := g.bms
+	vw := math.Min(bw, 1240)
+	if pressed(ebiten.KeyArrowLeft, ebiten.KeyA) {
+		g.mapPan -= 900 * dt
+	}
+	if pressed(ebiten.KeyArrowRight, ebiten.KeyD) {
+		g.mapPan += 900 * dt
+	}
+	center := g.truck.X*s + g.mapPan
+	left := math.Max(0, math.Min(bw-vw, center-vw/2))
+	ox, oy := (screenW-vw)/2-left, (screenH-bh)/2+30
+	view := screen.SubImage(image.Rect(int((screenW-vw)/2), 0, int((screenW+vw)/2), screenH)).(*ebiten.Image)
 	op := &ebiten.DrawImageOptions{}
 	op.GeoM.Translate(ox, oy)
-	screen.DrawImage(g.bigMap, op)
-	s := g.bms
-	for j, n := range hNames {
-		_, y := nodePos(0, j)
-		drawText(screen, n, faceSign, ox+bw/2, oy+y*s-7, color.NRGBA{255, 255, 200, 200}, text.AlignCenter)
+	view.DrawImage(g.bigMap, op)
+	for _, c := range cities {
+		for j, n := range c.HNames {
+			y := float64((c.TY+j*period+1)*tile) * s
+			x := float64((c.TX+(c.BX*period+2)/2)*tile) * s
+			drawText(view, n, faceSign, ox+x, oy+y-7, color.NRGBA{255, 255, 200, 200}, text.AlignCenter)
+		}
+		x := float64((c.TX+(c.BX*period+2)/2)*tile) * s
+		drawTextShadow(view, c.Name, faceBig, ox+x, oy-34, rgb(255, 210, 60), text.AlignCenter)
 	}
-	g.mapMarkers(screen, ox, oy, s, true)
-	drawTextShadow(screen, "CITY MAP  -  press M to close", faceMed, screenW/2, 8, color.White, text.AlignCenter)
-	drawText(screen, "! red = collision   ! orange = roadworks   F = fuel   white ring = your destination", faceTiny, screenW/2, 36, color.RGBA{220, 220, 220, 255}, text.AlignCenter)
+	drawTextShadow(view, "M11", faceBig, ox+float64((lonW+camTX)/2*tile)*s, oy+barrierY*s-60, rgb(120, 170, 255), text.AlignCenter)
+	g.mapMarkers(view, ox, oy, s, true)
+	drawTextShadow(screen, "MAP  -  Left/Right to scroll  ·  M to close", faceMed, screenW/2, 8, color.White, text.AlignCenter)
+	drawText(screen, "! red = collision   ! orange = roadworks   F = fuel   E = EV charging   white ring = destination", faceTiny, screenW/2, screenH-28, color.RGBA{220, 220, 220, 255}, text.AlignCenter)
 }
 
 func bar(screen *ebiten.Image, x, y, w, frac float64, c color.Color) {
@@ -737,10 +847,10 @@ func (g *Game) drawShop(screen *ebiten.Image) {
 	drawText(screen, "\"Every truck a bargain, every bargain a truck!\"   ·   Your money: "+pounds(g.money), faceSmall, screenW/2, 64, color.White, text.AlignCenter)
 	lx := 60.0
 	for i, mm := range models {
-		y := 110 + float64(i)*84
+		y := 100 + float64(i)*72
 		if i == g.shopSel {
-			fillRect(screen, lx-10, y-6, 470, 76, color.NRGBA{255, 210, 60, 60})
-			fillRect(screen, lx-10, y-6, 4, 76, rgb(255, 210, 60))
+			fillRect(screen, lx-10, y-6, 470, 66, color.NRGBA{255, 210, 60, 60})
+			fillRect(screen, lx-10, y-6, 4, 66, rgb(255, 210, 60))
 		}
 		drawRot(screen, makeTruckImgCached(g.cabColorPreview(i), i), lx+50, y+32, 0)
 		drawText(screen, mm.Name, faceMed, lx+110, y, color.White, text.AlignStart)
@@ -755,6 +865,9 @@ func (g *Game) drawShop(screen *ebiten.Image) {
 			sc = rgb(255, 110, 110)
 		}
 		drawText(screen, status, faceMed, lx+450, y, sc, text.AlignEnd)
+		if mm.Electric {
+			drawText(screen, "ELECTRIC", faceSign, lx+50, y+50, rgb(0, 220, 190), text.AlignCenter)
+		}
 		drawText(screen, mm.Blurb, faceTiny, lx+110, y+30, color.RGBA{200, 200, 210, 255}, text.AlignStart)
 	}
 	// detail panel
@@ -777,8 +890,11 @@ func (g *Game) drawShop(screen *ebiten.Image) {
 		{"Handling", m.Steer / 3.3, ""},
 		{"Brakes", m.Brake / 980, ""},
 		{"Cargo protection", (1.5 - m.Protect) / 1.1, ""},
-		{"Fuel tank", m.Tank / 460, fmt.Sprintf("%d L", int(m.Tank))},
-		{"Fuel economy", (8 - m.Economy) / 3, fmt.Sprintf("%.1f L/km", m.Economy)},
+		{"Fuel tank", m.Tank / 500, fmt.Sprintf("%d L", int(m.Tank))},
+		{"Range", m.Tank / m.Economy / 75, fmt.Sprintf("%.0f miles", m.Tank/m.Economy*1000/pxPerMile)},
+	}
+	if m.Electric {
+		stats[5].n, stats[5].s = "Battery", fmt.Sprintf("%d kWh", int(m.Tank))
 	}
 	for i, st := range stats {
 		y := 290 + float64(i)*28
@@ -833,6 +949,9 @@ func main() {
 	ebiten.SetWindowTitle("Truck Haul")
 	ebiten.SetWindowResizingMode(ebiten.WindowResizingModeEnabled)
 	if err := ebiten.RunGame(NewGame()); err != nil {
+		if runWithSoundFallback(err) {
+			return
+		}
 		log.Fatal(err)
 	}
 }
